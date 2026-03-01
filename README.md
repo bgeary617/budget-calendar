@@ -59,11 +59,21 @@ Commission overrides keyed by specific paycheck dates.
 - `date` (date or text in `YYYY-MM-DD`)
 - `commission_amount` (numeric)
 
+### `starting_balances`
+
+Stores the monthly starting balance used for reconciliation.
+
+- `id` (uuid, primary key, default generated)
+- `month` (int, JS month index 0-11)
+- `year` (int, four-digit year)
+- `amount` (numeric)
+
 ## App Behavior Notes
 
 - Base pay and paycheck interval are currently hard-coded in `components/calendar.tsx`.
-- Starting balance is currently hard-coded in `components/calendar.tsx`.
+- Starting balance is persisted in `starting_balances` and falls back to a default if no row exists.
 - Data is fetched client-side directly from Supabase.
+- Admin-only payroll settings panel is shown when the signed-in email matches `NEXT_PUBLIC_ADMIN_EMAILS` (comma-separated).
 - Mobile-friendly quick entry page: `/mobile-entry` (saves non-recurring expense rows with name `Wife Purchases`).
 
 ## Scripts
