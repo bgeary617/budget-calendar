@@ -400,6 +400,14 @@ export default function Calendar() {
     })
   }
 
+  const hasIncomeOnDay = (day: number) => {
+    return getEntriesForDay(day).some((item) => item.type === "income")
+  }
+
+  const hasExpenseOnDay = (day: number) => {
+    return getEntriesForDay(day).some((item) => item.type === "expense")
+  }
+
   const handleSaveEntry = async () => {
     const normalizedAmount = roundCurrency(amount)
     if (selectedDay === null || !name.trim() || !Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
@@ -1029,6 +1037,8 @@ export default function Calendar() {
         {days.map((day) => {
           const balance = getBalanceForDay(day)
           const payday = isPaycheckDay(day)
+          const hasIncome = hasIncomeOnDay(day)
+          const hasExpense = hasExpenseOnDay(day)
 
           let bgColor = "bg-green-100"
           if (balance < 1000) bgColor = "bg-yellow-100"
@@ -1062,6 +1072,8 @@ export default function Calendar() {
                 )}
                 {hasRecurringOnDay(day) && <span className="text-[10px] sm:text-xs leading-none">R</span>}
                 {hasMortgageOnDay(day) && <span className="text-[10px] sm:text-xs leading-none">🏠</span>}
+                {hasIncome && <span className="text-green-700 text-[10px] sm:text-xs leading-none">↑</span>}
+                {hasExpense && <span className="text-red-700 text-[10px] sm:text-xs leading-none">↓</span>}
               </div>
 
               <div className="text-[10px] sm:text-xs mt-1 sm:mt-2 leading-tight truncate">
