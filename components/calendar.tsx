@@ -1037,9 +1037,9 @@ export default function Calendar() {
                 setSelectedDay(day)
                 resetEntryForm()
               }}
-              className={`relative p-4 h-24 rounded-xl shadow-sm border cursor-pointer ${bgColor}`}
+              className={`relative p-2 sm:p-4 h-20 sm:h-24 rounded-xl shadow-sm border cursor-pointer overflow-hidden ${bgColor}`}
             >
-              <div className="font-semibold text-sm flex items-center gap-1">
+              <div className="font-semibold text-[11px] sm:text-sm flex items-center gap-0.5 sm:gap-1 whitespace-nowrap overflow-hidden">
                 {day}
                 {payday && (
                   <button
@@ -1048,17 +1048,19 @@ export default function Calendar() {
                       event.stopPropagation()
                       openCommissionModal(day)
                     }}
-                    className="rounded border border-green-300 bg-green-50 px-1 text-xs leading-none"
+                    className="rounded border border-green-300 bg-green-50 px-0.5 sm:px-1 text-[10px] sm:text-xs leading-none"
                     title="Set commission for this payday"
                   >
                     $
                   </button>
                 )}
-                {hasRecurringOnDay(day) && <span>R</span>}
-                {hasMortgageOnDay(day) && <span>🏠</span>}
+                {hasRecurringOnDay(day) && <span className="text-[10px] sm:text-xs leading-none">R</span>}
+                {hasMortgageOnDay(day) && <span className="text-[10px] sm:text-xs leading-none">🏠</span>}
               </div>
 
-              <div className="text-xs mt-2">${balance.toLocaleString()}</div>
+              <div className="text-[10px] sm:text-xs mt-1 sm:mt-2 leading-tight truncate">
+                ${balance.toLocaleString()}
+              </div>
 
               {hoveredDay === day && (
                 <div className="absolute z-50 top-full left-0 mt-1 w-56 bg-white border rounded shadow-lg p-2 text-xs">
