@@ -28,6 +28,14 @@ type StartingBalance = {
   amount: number
 }
 
+type RecurringDayOverride = {
+  id?: string
+  entry_id: string
+  year: number
+  month: number
+  day: number
+}
+
 type PayrollSettings = {
   basePay: number
   paycheckStartDate: string
@@ -94,6 +102,7 @@ export default function Calendar() {
   const [entries, setEntries] = useState<Entry[]>([])
   const [commissions, setCommissions] = useState<CommissionOverride[]>([])
   const [startingBalances, setStartingBalances] = useState<StartingBalance[]>([])
+  const [recurringDayOverrides, setRecurringDayOverrides] = useState<RecurringDayOverride[]>([])
   const [hoveredDay, setHoveredDay] = useState<number | null>(null)
 
   const [selectedDay, setSelectedDay] = useState<number | null>(null)
@@ -117,6 +126,10 @@ export default function Calendar() {
   const [showMonthlyReport, setShowMonthlyReport] = useState(false)
   const [showRecurringPayments, setShowRecurringPayments] = useState(false)
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
+  const [recurringDayDrafts, setRecurringDayDrafts] = useState<Record<string, string>>({})
+  const [recurringDayMessage, setRecurringDayMessage] = useState("")
+  const [recurringDayError, setRecurringDayError] = useState("")
+  const [savingRecurringEntryId, setSavingRecurringEntryId] = useState<string | null>(null)
 
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null)
   const [payrollSettings, setPayrollSettings] = useState<PayrollSettings>(DEFAULT_PAYROLL_SETTINGS)
@@ -167,6 +180,7 @@ export default function Calendar() {
     fetchEntries()
     fetchCommissions()
     fetchStartingBalances()
+    fetchRecurringDayOverrides()
   }, [month, year])
 
   const fetchEntries = async () => {
@@ -182,6 +196,11 @@ export default function Calendar() {
   const fetchStartingBalances = async () => {
     const { data } = await supabase.from("starting_balances").select("*")
     if (data) setStartingBalances(data as StartingBalance[])
+  }
+
+  const fetchRecurringDayOverrides = async () => {
+    const { data } = await supabase.from("recurring_payment_overrides").select("*")
+    if (data) setRecurringDayOverrides(data as RecurringDayOverride[])
   }
 
   const isPaycheckDayForDate = (targetYear: number, targetMonth: number, targetDay: number) => {
@@ -215,6 +234,21 @@ export default function Calendar() {
     return commissions.find((commission) => String(commission.date).slice(0, 10) === targetDateKey)
   }
 
+  const getRecurringOverrideForEntry = (entryId: string, targetYear: number, targetMonth: number) => {
+    return recurringDayOverrides.find(
+      (override) =>
+        override.entry_id === entryId &&
+        override.year === targetYear &&
+        override.month === targetMonth
+    )
+  }
+
+  const getEffectiveEntryDay = (entry: Entry, targetYear: number, targetMonth: number) => {
+    if (entry.recurring !== "monthly" || !entry.id) return entry.day
+    const override = getRecurringOverrideForEntry(entry.id, targetYear, targetMonth)
+    return override?.day ?? entry.day
+  }
+
   const currentStartingBalanceRecord = startingBalances.find(
     (record) => record.month === month && record.year === year
   )
@@ -235,7 +269,8 @@ export default function Calendar() {
 
       entries.forEach((entry) => {
         const applies = entryAppliesToMonth(entry, targetYear, targetMonth)
-        if (!applies || entry.day !== day) return
+        const effectiveDay = getEffectiveEntryDay(entry, targetYear, targetMonth)
+        if (!applies || effectiveDay !== day) return
 
         if (entry.type === "income") income += entry.amount
         else expenses += entry.amount
@@ -302,7 +337,8 @@ export default function Calendar() {
 
       entries.forEach((entry) => {
         const applies = entryAppliesToMonth(entry, year, month)
-        if (!applies || entry.day !== currentDay) return
+        const effectiveDay = getEffectiveEntryDay(entry, year, month)
+        if (!applies || effectiveDay !== currentDay) return
 
         if (entry.type === "expense") running -= entry.amount
         else running += entry.amount
@@ -323,7 +359,8 @@ export default function Calendar() {
 
     entries.forEach((entry) => {
       const applies = entryAppliesToMonth(entry, year, month)
-      if (!applies || entry.day !== day) return
+      const effectiveDay = getEffectiveEntryDay(entry, year, month)
+      if (!applies || effectiveDay !== day) return
       result.push({ label: entry.name, amount: entry.amount, type: entry.type })
     })
 
@@ -331,13 +368,27 @@ export default function Calendar() {
   }
 
   const getEditableEntriesForDay = (day: number) => {
-    return entries.filter((entry) => entryAppliesToMonth(entry, year, month) && entry.day === day)
+    return entries.filter((entry) => {
+      return entryAppliesToMonth(entry, year, month) && getEffectiveEntryDay(entry, year, month) === day
+    })
   }
 
   const hasRecurringOnDay = (day: number) => {
     return entries.some((entry) => {
       if (entry.recurring !== "monthly") return false
-      return entryAppliesToMonth(entry, year, month) && entry.day === day
+      return (
+        entryAppliesToMonth(entry, year, month) &&
+        getEffectiveEntryDay(entry, year, month) === day
+      )
+    })
+  }
+
+  const hasMortgageOnDay = (day: number) => {
+    return entries.some((entry) => {
+      const applies = entryAppliesToMonth(entry, year, month)
+      if (!applies || entry.type !== "expense") return false
+      const effectiveDay = getEffectiveEntryDay(entry, year, month)
+      return effectiveDay === day && /mortgage/i.test(entry.name)
     })
   }
 
@@ -428,6 +479,63 @@ export default function Calendar() {
     await fetchStartingBalances()
     setIsSavingBalance(false)
     setIsBalanceModalOpen(false)
+  }
+
+  const saveRecurringPaymentDay = async (entry: Entry) => {
+    if (!entry.id) return
+
+    setRecurringDayError("")
+    setRecurringDayMessage("")
+
+    const parsedDay = Number(recurringDayDrafts[entry.id] ?? "")
+    if (!Number.isInteger(parsedDay) || parsedDay < 1 || parsedDay > daysInMonth) {
+      setRecurringDayError(`Day must be between 1 and ${daysInMonth}.`)
+      return
+    }
+
+    const existingOverride = getRecurringOverrideForEntry(entry.id, year, month)
+    setSavingRecurringEntryId(entry.id)
+
+    let errorMessage: string | null = null
+
+    if (parsedDay === entry.day) {
+      if (existingOverride?.id) {
+        const { error } = await supabase
+          .from("recurring_payment_overrides")
+          .delete()
+          .eq("id", existingOverride.id)
+        errorMessage = error?.message ?? null
+      }
+    } else if (existingOverride?.id) {
+      const { error } = await supabase
+        .from("recurring_payment_overrides")
+        .update({ day: parsedDay })
+        .eq("id", existingOverride.id)
+      errorMessage = error?.message ?? null
+    } else {
+      const { error } = await supabase
+        .from("recurring_payment_overrides")
+        .insert([
+          {
+            entry_id: entry.id,
+            year,
+            month,
+            day: parsedDay
+          }
+        ])
+      errorMessage = error?.message ?? null
+    }
+
+    setSavingRecurringEntryId(null)
+
+    if (errorMessage) {
+      setRecurringDayError(errorMessage)
+      return
+    }
+
+    await fetchRecurringDayOverrides()
+    await fetchEntries()
+    setRecurringDayMessage(`Saved ${entry.name} for day ${parsedDay}.`)
   }
 
   const openCommissionModal = (day: number) => {
@@ -593,13 +701,38 @@ export default function Calendar() {
         entryAppliesToMonth(entry, year, month)
       )
     })
-    .sort((a, b) => a.day - b.day || a.name.localeCompare(b.name))
+    .sort((a, b) => {
+      const dayA = getEffectiveEntryDay(a, year, month)
+      const dayB = getEffectiveEntryDay(b, year, month)
+      return dayA - dayB || a.name.localeCompare(b.name)
+    })
   const recurringSubtotal = recurringPaymentsForMonth.reduce(
     (sum, entry) => sum + entry.amount,
     0
   )
 
   const selectedDayEntries = selectedDay === null ? [] : getEditableEntriesForDay(selectedDay)
+
+  useEffect(() => {
+    const drafts: Record<string, string> = {}
+    entries.forEach((entry) => {
+      if (
+        entry.type === "expense" &&
+        entry.recurring === "monthly" &&
+        entryAppliesToMonth(entry, year, month) &&
+        entry.id
+      ) {
+        const override = recurringDayOverrides.find(
+          (item) =>
+            item.entry_id === entry.id &&
+            item.year === year &&
+            item.month === month
+        )
+        drafts[entry.id] = String(override?.day ?? entry.day)
+      }
+    })
+    setRecurringDayDrafts(drafts)
+  }, [entries, recurringDayOverrides, year, month])
 
   return (
     <div className="max-w-5xl mx-auto mt-10">
@@ -706,6 +839,7 @@ export default function Calendar() {
                     <th className="py-2">Date</th>
                     <th className="py-2">Name</th>
                     <th className="py-2">Amount</th>
+                    <th className="py-2">Paid Day</th>
                     <th className="py-2">Actions</th>
                   </tr>
                 </thead>
@@ -713,15 +847,44 @@ export default function Calendar() {
                   {recurringPaymentsForMonth.map((entry) => (
                     <tr key={entry.id} className="border-b last:border-b-0">
                       <td className="py-2">
-                        {currentMonth.toLocaleString("default", { month: "short" })} {entry.day}
+                        {currentMonth.toLocaleString("default", { month: "short" })}{" "}
+                        {getEffectiveEntryDay(entry, year, month)}
                       </td>
                       <td className="py-2">{entry.name}</td>
                       <td className="py-2 text-red-700">${entry.amount.toLocaleString()}</td>
                       <td className="py-2">
+                        {entry.id ? (
+                          <input
+                            type="number"
+                            min="1"
+                            max={daysInMonth}
+                            value={recurringDayDrafts[entry.id] ?? String(getEffectiveEntryDay(entry, year, month))}
+                            onChange={(event) =>
+                              setRecurringDayDrafts((prev) => ({
+                                ...prev,
+                                [entry.id as string]: event.target.value
+                              }))
+                            }
+                            className="w-20 border rounded p-1 text-xs"
+                          />
+                        ) : (
+                          "-"
+                        )}
+                      </td>
+                      <td className="py-2">
                         <div className="flex gap-2">
+                          {entry.id && (
+                            <button
+                              onClick={() => saveRecurringPaymentDay(entry)}
+                              className="px-2 py-1 rounded border text-xs"
+                              disabled={savingRecurringEntryId === entry.id}
+                            >
+                              {savingRecurringEntryId === entry.id ? "Saving..." : "Save Day"}
+                            </button>
+                          )}
                           <button
                             onClick={() => {
-                              setSelectedDay(entry.day)
+                              setSelectedDay(getEffectiveEntryDay(entry, year, month))
                               openEntryEditor(entry)
                             }}
                             className="px-2 py-1 rounded border text-xs"
@@ -743,6 +906,12 @@ export default function Calendar() {
               <div className="mt-3 text-right text-sm font-semibold">
                 Subtotal: ${recurringSubtotal.toLocaleString()}
               </div>
+              {recurringDayError && (
+                <p className="mt-2 text-sm text-red-600">{recurringDayError}</p>
+              )}
+              {recurringDayMessage && (
+                <p className="mt-2 text-sm text-green-600">{recurringDayMessage}</p>
+              )}
             </>
           )}
         </div>
@@ -825,6 +994,7 @@ export default function Calendar() {
                   </button>
                 )}
                 {hasRecurringOnDay(day) && <span>R</span>}
+                {hasMortgageOnDay(day) && <span>🏠</span>}
               </div>
 
               <div className="text-xs mt-2">${balance.toLocaleString()}</div>
