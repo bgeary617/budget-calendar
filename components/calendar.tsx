@@ -827,6 +827,12 @@ export default function Calendar() {
         >
           Open Mobile Expense Entry
         </Link>
+        <Link
+          href="/debts"
+          className="px-3 py-2 rounded border bg-white text-sm"
+        >
+          Open Debts
+        </Link>
         <button
           onClick={openBalanceModal}
           className="px-3 py-2 rounded border bg-white text-sm"
