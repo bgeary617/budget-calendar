@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { supabase } from "../lib/supabaseClient"
+import { isPaycheckDayUtc, parseCurrencyInput, parseDayInput, roundCurrency } from "../lib/financeUtils"
 
 type Entry = {
-  id?: string
+  id?: number
   day: number
   name: string
   amount: number
@@ -30,10 +31,16 @@ type StartingBalance = {
 
 type RecurringDayOverride = {
   id?: string
-  entry_id: string
+  entry_id: number
   year: number
   month: number
   day: number
+}
+
+type Toast = {
+  id: number
+  message: string
+  type: "error" | "success"
 }
 
 type PayrollSettings = {
@@ -56,9 +63,6 @@ const getDateKey = (targetYear: number, targetMonth: number, targetDay: number) 
   const dd = String(targetDay).padStart(2, "0")
   return `${targetYear}-${mm}-${dd}`
 }
-
-const toUtcDayNumber = (targetYear: number, targetMonth: number, targetDay: number) =>
-  Math.floor(Date.UTC(targetYear, targetMonth, targetDay) / (1000 * 60 * 60 * 24))
 
 const parseDateKey = (dateKey: string) => {
   const [yearStr, monthStr, dayStr] = dateKey.split("-")
@@ -129,7 +133,8 @@ export default function Calendar() {
   const [recurringDayDrafts, setRecurringDayDrafts] = useState<Record<string, string>>({})
   const [recurringDayMessage, setRecurringDayMessage] = useState("")
   const [recurringDayError, setRecurringDayError] = useState("")
-  const [savingRecurringEntryId, setSavingRecurringEntryId] = useState<string | null>(null)
+  const [savingRecurringEntryId, setSavingRecurringEntryId] = useState<number | null>(null)
+  const [toasts, setToasts] = useState<Toast[]>([])
 
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null)
   const [payrollSettings, setPayrollSettings] = useState<PayrollSettings>(DEFAULT_PAYROLL_SETTINGS)
@@ -149,6 +154,14 @@ export default function Calendar() {
   }, [])
 
   const isAdmin = currentUserEmail ? adminEmails.includes(currentUserEmail) : false
+
+  const pushToast = (message: string, type: "error" | "success" = "error") => {
+    const id = Date.now() + Math.floor(Math.random() * 10000)
+    setToasts((prev) => [...prev, { id, message, type }])
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((toast) => toast.id !== id))
+    }, 3500)
+  }
 
   useEffect(() => {
     const loadUser = async () => {
@@ -204,18 +217,13 @@ export default function Calendar() {
   }
 
   const isPaycheckDayForDate = (targetYear: number, targetMonth: number, targetDay: number) => {
-    const startParts = parseDateKey(payrollSettings.paycheckStartDate)
-    if (!startParts) return false
-
-    const interval = Math.floor(payrollSettings.paycheckIntervalDays)
-    if (!Number.isFinite(interval) || interval <= 0) return false
-
-    const currentDayNumber = toUtcDayNumber(targetYear, targetMonth, targetDay)
-    const startDayNumber = toUtcDayNumber(startParts.year, startParts.month, startParts.day)
-    const diff = currentDayNumber - startDayNumber
-
-    if (diff < 0) return false
-    return diff % interval === 0
+    return isPaycheckDayUtc(
+      payrollSettings.paycheckStartDate,
+      payrollSettings.paycheckIntervalDays,
+      targetYear,
+      targetMonth,
+      targetDay
+    )
   }
 
   const isPaycheckDay = (day: number) => isPaycheckDayForDate(year, month, day)
@@ -234,7 +242,7 @@ export default function Calendar() {
     return commissions.find((commission) => String(commission.date).slice(0, 10) === targetDateKey)
   }
 
-  const getRecurringOverrideForEntry = (entryId: string, targetYear: number, targetMonth: number) => {
+  const getRecurringOverrideForEntry = (entryId: number, targetYear: number, targetMonth: number) => {
     return recurringDayOverrides.find(
       (override) =>
         override.entry_id === entryId &&
@@ -393,33 +401,49 @@ export default function Calendar() {
   }
 
   const handleSaveEntry = async () => {
-    if (selectedDay === null || !name || amount <= 0) return
+    const normalizedAmount = roundCurrency(amount)
+    if (selectedDay === null || !name.trim() || !Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+      pushToast("Entry needs a name and amount greater than 0.")
+      return
+    }
 
     if (editingEntry?.id) {
       const { error } = await supabase
         .from("expenses")
-        .update({ name, amount, recurring, type })
+        .update({ name: name.trim(), amount: normalizedAmount, recurring, type })
         .eq("id", editingEntry.id)
-      if (error) return
+      if (error) {
+        pushToast(error.message)
+        return
+      }
     } else {
       const { error } = await supabase.from("expenses").insert([
-        { day: selectedDay, name, amount, recurring, type, month, year }
+        { day: selectedDay, name: name.trim(), amount: normalizedAmount, recurring, type, month, year }
       ])
-      if (error) return
+      if (error) {
+        pushToast(error.message)
+        return
+      }
     }
 
     await fetchEntries()
     resetEntryForm()
+    pushToast("Entry saved.", "success")
   }
 
   const handleDeleteEntry = async (entry: Entry) => {
-    if (!entry.id) return
+    if (entry.id == null) return
     const confirmed = window.confirm(`Delete "${entry.name}"?`)
     if (!confirmed) return
 
-    await supabase.from("expenses").delete().eq("id", entry.id)
+    const { error } = await supabase.from("expenses").delete().eq("id", entry.id)
+    if (error) {
+      pushToast(error.message)
+      return
+    }
     await fetchEntries()
     if (editingEntry?.id === entry.id) resetEntryForm()
+    pushToast("Entry deleted.", "success")
   }
 
   const resetEntryForm = () => {
@@ -445,9 +469,10 @@ export default function Calendar() {
   }
 
   const saveStartingBalance = async () => {
-    const parsed = Number(balanceInput)
-    if (!Number.isFinite(parsed)) {
+    const parsed = parseCurrencyInput(balanceInput)
+    if (parsed === null) {
       setBalanceError("Enter a valid number.")
+      pushToast("Starting balance must be a valid number.")
       return
     }
 
@@ -461,6 +486,7 @@ export default function Calendar() {
 
       if (error) {
         setBalanceError(error.message)
+        pushToast(error.message)
         setIsSavingBalance(false)
         return
       }
@@ -471,6 +497,7 @@ export default function Calendar() {
 
       if (error) {
         setBalanceError(error.message)
+        pushToast(error.message)
         setIsSavingBalance(false)
         return
       }
@@ -479,17 +506,19 @@ export default function Calendar() {
     await fetchStartingBalances()
     setIsSavingBalance(false)
     setIsBalanceModalOpen(false)
+    pushToast("Starting balance saved.", "success")
   }
 
   const saveRecurringPaymentDay = async (entry: Entry) => {
-    if (!entry.id) return
+    if (entry.id == null) return
 
     setRecurringDayError("")
     setRecurringDayMessage("")
 
-    const parsedDay = Number(recurringDayDrafts[entry.id] ?? "")
-    if (!Number.isInteger(parsedDay) || parsedDay < 1 || parsedDay > daysInMonth) {
+    const parsedDay = parseDayInput(recurringDayDrafts[String(entry.id)] ?? "", 1, daysInMonth)
+    if (parsedDay === null) {
       setRecurringDayError(`Day must be between 1 and ${daysInMonth}.`)
+      pushToast(`Day must be between 1 and ${daysInMonth}.`)
       return
     }
 
@@ -530,12 +559,14 @@ export default function Calendar() {
 
     if (errorMessage) {
       setRecurringDayError(errorMessage)
+      pushToast(errorMessage)
       return
     }
 
     await fetchRecurringDayOverrides()
     await fetchEntries()
     setRecurringDayMessage(`Saved ${entry.name} for day ${parsedDay}.`)
+    pushToast(`${entry.name} moved to day ${parsedDay}.`, "success")
   }
 
   const openCommissionModal = (day: number) => {
@@ -582,9 +613,10 @@ export default function Calendar() {
   const saveCommission = async () => {
     if (selectedCommissionDay === null) return
 
-    const parsed = Number(commissionInput)
-    if (!Number.isFinite(parsed) || parsed < 0) {
+    const parsed = parseCurrencyInput(commissionInput)
+    if (parsed === null || parsed < 0) {
       setCommissionError("Enter a valid commission amount of 0 or more.")
+      pushToast("Commission must be 0 or greater.")
       return
     }
 
@@ -594,11 +626,13 @@ export default function Calendar() {
 
     if (error) {
       setCommissionError(error)
+      pushToast(error)
       return
     }
 
     await fetchCommissions()
     closeCommissionModal()
+    pushToast("Commission saved.", "success")
   }
 
   const openSettingsModal = () => {
@@ -617,9 +651,10 @@ export default function Calendar() {
     setAdminCommissionMessage("")
     setAdminCommissionError("")
 
-    const parsed = Number(adminCommissionDrafts[day] ?? "")
-    if (!Number.isFinite(parsed) || parsed < 0) {
+    const parsed = parseCurrencyInput(adminCommissionDrafts[day] ?? "")
+    if (parsed === null || parsed < 0) {
       setAdminCommissionError("Commission must be a number 0 or greater.")
+      pushToast("Commission must be 0 or greater.")
       return
     }
 
@@ -629,6 +664,7 @@ export default function Calendar() {
 
     if (error) {
       setAdminCommissionError(error)
+      pushToast(error)
       return
     }
 
@@ -636,33 +672,37 @@ export default function Calendar() {
     setAdminCommissionMessage(
       `Saved commission for ${currentMonth.toLocaleString("default", { month: "short" })} ${day}.`
     )
+    pushToast("Commission saved.", "success")
   }
 
   const savePayrollSettings = () => {
     setSettingsMessage("")
     setSettingsError("")
 
-    const basePay = Number(payrollDraft.basePay)
+    const basePay = parseCurrencyInput(payrollDraft.basePay)
     const interval = Number(payrollDraft.paycheckIntervalDays)
     const startDate = payrollDraft.paycheckStartDate
 
-    if (!Number.isFinite(basePay) || basePay < 0) {
+    if (basePay === null || basePay < 0) {
       setSettingsError("Base pay must be a number 0 or greater.")
+      pushToast("Base pay must be 0 or greater.")
       return
     }
 
     if (!Number.isFinite(interval) || interval <= 0) {
       setSettingsError("Paycheck interval must be greater than 0.")
+      pushToast("Paycheck interval must be greater than 0.")
       return
     }
 
     if (!parseDateKey(startDate)) {
       setSettingsError("Paycheck start date must be a valid date.")
+      pushToast("Paycheck start date must be a valid date.")
       return
     }
 
     const normalized: PayrollSettings = {
-      basePay,
+      basePay: roundCurrency(basePay),
       paycheckStartDate: startDate,
       paycheckIntervalDays: Math.floor(interval)
     }
@@ -671,6 +711,7 @@ export default function Calendar() {
     setPayrollDraft(normalized)
     localStorage.setItem(PAYROLL_STORAGE_KEY, JSON.stringify(normalized))
     setSettingsMessage("Saved payroll settings on this device.")
+    pushToast("Payroll settings saved.", "success")
   }
 
   const resetPayrollSettings = () => {
@@ -728,7 +769,7 @@ export default function Calendar() {
             item.year === year &&
             item.month === month
         )
-        drafts[entry.id] = String(override?.day ?? entry.day)
+        drafts[String(entry.id)] = String(override?.day ?? entry.day)
       }
     })
     setRecurringDayDrafts(drafts)
@@ -736,6 +777,23 @@ export default function Calendar() {
 
   return (
     <div className="max-w-5xl mx-auto mt-10">
+      {toasts.length > 0 && (
+        <div className="fixed top-4 right-4 z-[70] space-y-2">
+          {toasts.map((toast) => (
+            <div
+              key={toast.id}
+              className={`rounded-md px-3 py-2 text-sm shadow ${
+                toast.type === "error"
+                  ? "bg-red-600 text-white"
+                  : "bg-green-600 text-white"
+              }`}
+            >
+              {toast.message}
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="flex justify-between items-center mb-6">
         <button
           onClick={() => setCurrentMonth(new Date(year, month - 1, 1))}
@@ -858,11 +916,14 @@ export default function Calendar() {
                             type="number"
                             min="1"
                             max={daysInMonth}
-                            value={recurringDayDrafts[entry.id] ?? String(getEffectiveEntryDay(entry, year, month))}
+                            value={
+                              recurringDayDrafts[String(entry.id)] ??
+                              String(getEffectiveEntryDay(entry, year, month))
+                            }
                             onChange={(event) =>
                               setRecurringDayDrafts((prev) => ({
                                 ...prev,
-                                [entry.id as string]: event.target.value
+                                [String(entry.id)]: event.target.value
                               }))
                             }
                             className="w-20 border rounded p-1 text-xs"

@@ -4,6 +4,7 @@ import Link from "next/link"
 import { useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { supabase } from "../../lib/supabaseClient"
+import { parseCurrencyInput } from "../../lib/financeUtils"
 
 const toDateInputValue = (date: Date) => {
   const year = date.getFullYear()
@@ -40,8 +41,8 @@ export default function MobileEntryPage() {
     setMessage("")
     setError("")
 
-    const parsedAmount = Number(amount)
-    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+    const parsedAmount = parseCurrencyInput(amount)
+    if (parsedAmount === null || parsedAmount <= 0) {
       setError("Enter a valid amount greater than 0.")
       return
     }
