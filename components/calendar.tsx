@@ -215,8 +215,6 @@ export default function Calendar() {
     (record) => record.month === month && record.year === year
   )
 
-  const startingBalance = currentStartingBalanceRecord?.amount ?? DEFAULT_STARTING_BALANCE
-
   const calculateMonthSummary = (targetYear: number, targetMonth: number) => {
     const daysInTargetMonth = new Date(targetYear, targetMonth + 1, 0).getDate()
     let income = 0
@@ -247,6 +245,47 @@ export default function Calendar() {
       net: income - expenses
     }
   }
+
+  const getManualStartingBalance = (targetYear: number, targetMonth: number) => {
+    const match = startingBalances.find(
+      (record) => record.year === targetYear && record.month === targetMonth
+    )
+    return match?.amount
+  }
+
+  const getComputedStartingBalance = (targetYear: number, targetMonth: number) => {
+    const memo = new Map<string, number>()
+
+    const compute = (yearValue: number, monthValue: number, depth: number): number => {
+      const key = `${yearValue}-${monthValue}`
+      const cached = memo.get(key)
+      if (cached !== undefined) return cached
+
+      const manual = getManualStartingBalance(yearValue, monthValue)
+      if (manual !== undefined) {
+        memo.set(key, manual)
+        return manual
+      }
+
+      if (depth > 240) {
+        memo.set(key, DEFAULT_STARTING_BALANCE)
+        return DEFAULT_STARTING_BALANCE
+      }
+
+      const prevMonth = monthValue === 0 ? 11 : monthValue - 1
+      const prevYear = monthValue === 0 ? yearValue - 1 : yearValue
+      const prevStarting = compute(prevYear, prevMonth, depth + 1)
+      const prevSummary = calculateMonthSummary(prevYear, prevMonth)
+      const computed = prevStarting + prevSummary.net
+
+      memo.set(key, computed)
+      return computed
+    }
+
+    return compute(targetYear, targetMonth, 0)
+  }
+
+  const startingBalance = getComputedStartingBalance(year, month)
 
   const getBalanceForDay = (day: number) => {
     let running = startingBalance
