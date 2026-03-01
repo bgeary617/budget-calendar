@@ -114,6 +114,7 @@ export default function Calendar() {
   const [type, setType] = useState<"expense" | "income">("expense")
 
   const [showMonthlyReport, setShowMonthlyReport] = useState(false)
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
 
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null)
   const [payrollSettings, setPayrollSettings] = useState<PayrollSettings>(DEFAULT_PAYROLL_SETTINGS)
@@ -535,69 +536,13 @@ export default function Calendar() {
       </div>
 
       {isAdmin && (
-        <div className="mb-6 rounded-xl border bg-white p-4 shadow-sm">
-          <h3 className="text-sm font-semibold mb-3">Admin Payroll Settings</h3>
-
-          <div className="grid gap-3 md:grid-cols-3">
-            <div>
-              <label className="text-xs text-gray-600">Base Pay</label>
-              <input
-                type="number"
-                step="0.01"
-                value={payrollDraft.basePay}
-                onChange={(event) =>
-                  setPayrollDraft((prev) => ({ ...prev, basePay: Number(event.target.value) }))
-                }
-                className="mt-1 w-full border rounded p-2 text-sm"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-600">Paycheck Start Date</label>
-              <input
-                type="date"
-                value={payrollDraft.paycheckStartDate}
-                onChange={(event) =>
-                  setPayrollDraft((prev) => ({ ...prev, paycheckStartDate: event.target.value }))
-                }
-                className="mt-1 w-full border rounded p-2 text-sm"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-gray-600">Interval (Days)</label>
-              <input
-                type="number"
-                min="1"
-                value={payrollDraft.paycheckIntervalDays}
-                onChange={(event) =>
-                  setPayrollDraft((prev) => ({
-                    ...prev,
-                    paycheckIntervalDays: Number(event.target.value)
-                  }))
-                }
-                className="mt-1 w-full border rounded p-2 text-sm"
-              />
-            </div>
-          </div>
-
-          {settingsError && <p className="mt-3 text-sm text-red-600">{settingsError}</p>}
-          {settingsMessage && <p className="mt-3 text-sm text-green-600">{settingsMessage}</p>}
-
-          <div className="mt-3 flex gap-2">
-            <button
-              onClick={savePayrollSettings}
-              className="px-3 py-2 rounded bg-black text-white text-sm"
-            >
-              Save Settings
-            </button>
-            <button
-              onClick={resetPayrollSettings}
-              className="px-3 py-2 rounded border text-sm"
-            >
-              Reset Defaults
-            </button>
-          </div>
+        <div className="mb-6 flex justify-end">
+          <button
+            onClick={() => setIsSettingsModalOpen(true)}
+            className="px-3 py-2 rounded border bg-white text-sm"
+          >
+            Admin Payroll Settings
+          </button>
         </div>
       )}
 
@@ -932,6 +877,89 @@ export default function Calendar() {
               >
                 {isSavingCommission ? "Saving..." : "Save"}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isAdmin && isSettingsModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setIsSettingsModalOpen(false)}
+          />
+
+          <div className="relative bg-white p-6 rounded-xl w-full max-w-2xl shadow-xl">
+            <h3 className="text-lg font-semibold mb-4">Admin Payroll Settings</h3>
+
+            <div className="grid gap-3 md:grid-cols-3">
+              <div>
+                <label className="text-xs text-gray-600">Base Pay</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={payrollDraft.basePay}
+                  onChange={(event) =>
+                    setPayrollDraft((prev) => ({ ...prev, basePay: Number(event.target.value) }))
+                  }
+                  className="mt-1 w-full border rounded p-2 text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-600">Paycheck Start Date</label>
+                <input
+                  type="date"
+                  value={payrollDraft.paycheckStartDate}
+                  onChange={(event) =>
+                    setPayrollDraft((prev) => ({ ...prev, paycheckStartDate: event.target.value }))
+                  }
+                  className="mt-1 w-full border rounded p-2 text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs text-gray-600">Interval (Days)</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={payrollDraft.paycheckIntervalDays}
+                  onChange={(event) =>
+                    setPayrollDraft((prev) => ({
+                      ...prev,
+                      paycheckIntervalDays: Number(event.target.value)
+                    }))
+                  }
+                  className="mt-1 w-full border rounded p-2 text-sm"
+                />
+              </div>
+            </div>
+
+            {settingsError && <p className="mt-3 text-sm text-red-600">{settingsError}</p>}
+            {settingsMessage && <p className="mt-3 text-sm text-green-600">{settingsMessage}</p>}
+
+            <div className="mt-4 flex justify-between">
+              <button
+                onClick={() => setIsSettingsModalOpen(false)}
+                className="text-gray-500"
+              >
+                Close
+              </button>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={resetPayrollSettings}
+                  className="px-3 py-2 rounded border text-sm"
+                >
+                  Reset Defaults
+                </button>
+                <button
+                  onClick={savePayrollSettings}
+                  className="px-3 py-2 rounded bg-black text-white text-sm"
+                >
+                  Save Settings
+                </button>
+              </div>
             </div>
           </div>
         </div>
