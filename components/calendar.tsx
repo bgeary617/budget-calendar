@@ -621,6 +621,7 @@ export default function Calendar() {
                     <th className="py-2">Date</th>
                     <th className="py-2">Name</th>
                     <th className="py-2">Amount</th>
+                    <th className="py-2">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -631,6 +632,25 @@ export default function Calendar() {
                       </td>
                       <td className="py-2">{entry.name}</td>
                       <td className="py-2 text-red-700">${entry.amount.toLocaleString()}</td>
+                      <td className="py-2">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              setSelectedDay(entry.day)
+                              openEntryEditor(entry)
+                            }}
+                            className="px-2 py-1 rounded border text-xs"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleDeleteEntry(entry)}
+                            className="px-2 py-1 rounded border text-xs text-red-600"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
