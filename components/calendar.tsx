@@ -37,6 +37,14 @@ type RecurringDayOverride = {
   day: number
 }
 
+type RecurringPaidStatus = {
+  id?: string
+  entry_id: number
+  year: number
+  month: number
+  paid: boolean
+}
+
 type Toast = {
   id: number
   message: string
@@ -107,6 +115,7 @@ export default function Calendar() {
   const [commissions, setCommissions] = useState<CommissionOverride[]>([])
   const [startingBalances, setStartingBalances] = useState<StartingBalance[]>([])
   const [recurringDayOverrides, setRecurringDayOverrides] = useState<RecurringDayOverride[]>([])
+  const [recurringPaidStatuses, setRecurringPaidStatuses] = useState<RecurringPaidStatus[]>([])
   const [hoveredDay, setHoveredDay] = useState<number | null>(null)
 
   const [selectedDay, setSelectedDay] = useState<number | null>(null)
@@ -134,6 +143,7 @@ export default function Calendar() {
   const [recurringDayMessage, setRecurringDayMessage] = useState("")
   const [recurringDayError, setRecurringDayError] = useState("")
   const [savingRecurringEntryId, setSavingRecurringEntryId] = useState<number | null>(null)
+  const [savingPaidEntryId, setSavingPaidEntryId] = useState<number | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
 
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null)
@@ -194,6 +204,7 @@ export default function Calendar() {
     fetchCommissions()
     fetchStartingBalances()
     fetchRecurringDayOverrides()
+    fetchRecurringPaidStatuses()
   }, [month, year])
 
   const fetchEntries = async () => {
@@ -214,6 +225,11 @@ export default function Calendar() {
   const fetchRecurringDayOverrides = async () => {
     const { data } = await supabase.from("recurring_payment_overrides").select("*")
     if (data) setRecurringDayOverrides(data as RecurringDayOverride[])
+  }
+
+  const fetchRecurringPaidStatuses = async () => {
+    const { data } = await supabase.from("recurring_payment_paid_status").select("*")
+    if (data) setRecurringPaidStatuses(data as RecurringPaidStatus[])
   }
 
   const isPaycheckDayForDate = (targetYear: number, targetMonth: number, targetDay: number) => {
@@ -251,10 +267,28 @@ export default function Calendar() {
     )
   }
 
+  const getRecurringPaidStatusForEntry = (
+    entryId: number,
+    targetYear: number,
+    targetMonth: number
+  ) => {
+    return recurringPaidStatuses.find(
+      (status) =>
+        status.entry_id === entryId &&
+        status.year === targetYear &&
+        status.month === targetMonth
+    )
+  }
+
   const getEffectiveEntryDay = (entry: Entry, targetYear: number, targetMonth: number) => {
     if (entry.recurring !== "monthly" || !entry.id) return entry.day
     const override = getRecurringOverrideForEntry(entry.id, targetYear, targetMonth)
     return override?.day ?? entry.day
+  }
+
+  const isRecurringPaid = (entry: Entry) => {
+    if (entry.recurring !== "monthly" || entry.id == null) return false
+    return !!getRecurringPaidStatusForEntry(entry.id, year, month)?.paid
   }
 
   const currentStartingBalanceRecord = startingBalances.find(
@@ -575,6 +609,53 @@ export default function Calendar() {
     await fetchEntries()
     setRecurringDayMessage(`Saved ${entry.name} for day ${parsedDay}.`)
     pushToast(`${entry.name} moved to day ${parsedDay}.`, "success")
+  }
+
+  const toggleRecurringPaidStatus = async (entry: Entry, nextPaid: boolean) => {
+    if (entry.id == null) return
+
+    const existing = getRecurringPaidStatusForEntry(entry.id, year, month)
+    setSavingPaidEntryId(entry.id)
+
+    let errorMessage: string | null = null
+
+    if (!nextPaid) {
+      if (existing?.id) {
+        const { error } = await supabase
+          .from("recurring_payment_paid_status")
+          .delete()
+          .eq("id", existing.id)
+        errorMessage = error?.message ?? null
+      }
+    } else if (existing?.id) {
+      const { error } = await supabase
+        .from("recurring_payment_paid_status")
+        .update({ paid: true })
+        .eq("id", existing.id)
+      errorMessage = error?.message ?? null
+    } else {
+      const { error } = await supabase
+        .from("recurring_payment_paid_status")
+        .insert([
+          {
+            entry_id: entry.id,
+            year,
+            month,
+            paid: true
+          }
+        ])
+      errorMessage = error?.message ?? null
+    }
+
+    setSavingPaidEntryId(null)
+
+    if (errorMessage) {
+      pushToast(errorMessage)
+      return
+    }
+
+    await fetchRecurringPaidStatuses()
+    pushToast(nextPaid ? `${entry.name} marked paid.` : `${entry.name} marked unpaid.`, "success")
   }
 
   const openCommissionModal = (day: number) => {
@@ -912,18 +993,32 @@ export default function Calendar() {
                     <th className="py-2">Name</th>
                     <th className="py-2">Amount</th>
                     <th className="py-2">Paid Day</th>
+                    <th className="py-2">Paid</th>
                     <th className="py-2">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {recurringPaymentsForMonth.map((entry) => (
-                    <tr key={entry.id} className="border-b last:border-b-0">
+                    <tr
+                      key={entry.id}
+                      className={`border-b last:border-b-0 ${
+                        isRecurringPaid(entry) ? "bg-gray-50 text-gray-500" : ""
+                      }`}
+                    >
                       <td className="py-2">
                         {currentMonth.toLocaleString("default", { month: "short" })}{" "}
                         {getEffectiveEntryDay(entry, year, month)}
                       </td>
-                      <td className="py-2">{entry.name}</td>
-                      <td className="py-2 text-red-700">${entry.amount.toLocaleString()}</td>
+                      <td className={`py-2 ${isRecurringPaid(entry) ? "line-through" : ""}`}>
+                        {entry.name}
+                      </td>
+                      <td
+                        className={`py-2 ${
+                          isRecurringPaid(entry) ? "line-through text-gray-500" : "text-red-700"
+                        }`}
+                      >
+                        ${entry.amount.toLocaleString()}
+                      </td>
                       <td className="py-2">
                         {entry.id ? (
                           <input
@@ -941,6 +1036,19 @@ export default function Calendar() {
                               }))
                             }
                             className="w-20 border rounded p-1 text-xs"
+                          />
+                        ) : (
+                          "-"
+                        )}
+                      </td>
+                      <td className="py-2">
+                        {entry.id ? (
+                          <input
+                            type="checkbox"
+                            checked={isRecurringPaid(entry)}
+                            onChange={(event) => toggleRecurringPaidStatus(entry, event.target.checked)}
+                            disabled={savingPaidEntryId === entry.id}
+                            className="h-4 w-4"
                           />
                         ) : (
                           "-"
