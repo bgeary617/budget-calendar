@@ -1,6 +1,5 @@
 "use client"
 
-import Link from "next/link"
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import Calendar from "../components/calendar"
@@ -48,15 +47,6 @@ export default function Home() {
         >
           Log out
         </button>
-      </div>
-
-      <div className="mb-6 flex justify-center">
-        <Link
-          href="/mobile-entry"
-          className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 shadow-sm"
-        >
-          Open Mobile Expense Entry
-        </Link>
       </div>
 
       <Calendar/>

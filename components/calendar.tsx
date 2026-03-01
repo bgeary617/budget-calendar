@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import { supabase } from "../lib/supabaseClient"
 
 type Entry = {
@@ -114,6 +115,7 @@ export default function Calendar() {
   const [type, setType] = useState<"expense" | "income">("expense")
 
   const [showMonthlyReport, setShowMonthlyReport] = useState(false)
+  const [showRecurringPayments, setShowRecurringPayments] = useState(false)
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
 
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null)
@@ -498,6 +500,19 @@ export default function Calendar() {
     const monthSummary = calculateMonthSummary(year, monthIndex)
     return { month: monthIndex, ...monthSummary }
   })
+  const recurringPaymentsForMonth = entries
+    .filter((entry) => {
+      return (
+        entry.type === "expense" &&
+        entry.recurring === "monthly" &&
+        entryAppliesToMonth(entry, year, month)
+      )
+    })
+    .sort((a, b) => a.day - b.day || a.name.localeCompare(b.name))
+  const recurringSubtotal = recurringPaymentsForMonth.reduce(
+    (sum, entry) => sum + entry.amount,
+    0
+  )
 
   const selectedDayEntries = selectedDay === null ? [] : getEditableEntriesForDay(selectedDay)
 
@@ -527,24 +542,44 @@ export default function Calendar() {
         <div className="text-sm text-gray-600">
           Starting Balance: ${startingBalance.toLocaleString()}
         </div>
+      </div>
+
+      <div className="mb-6 flex flex-wrap gap-2">
+        <Link
+          href="/mobile-entry"
+          className="px-3 py-2 rounded border bg-white text-sm"
+        >
+          Open Mobile Expense Entry
+        </Link>
         <button
           onClick={openBalanceModal}
-          className="px-3 py-1 bg-white border rounded text-sm"
+          className="px-3 py-2 rounded border bg-white text-sm"
         >
           Set Starting Balance
         </button>
-      </div>
-
-      {isAdmin && (
-        <div className="mb-6 flex justify-end">
+        <button
+          onClick={() => setShowRecurringPayments((prev) => !prev)}
+          className="px-3 py-2 rounded border bg-white text-sm"
+        >
+          {showRecurringPayments
+            ? "Hide Month's Recurring Payments"
+            : "Show Month's Recurring Payments"}
+        </button>
+        <button
+          onClick={() => setShowMonthlyReport((prev) => !prev)}
+          className="px-3 py-2 rounded border bg-white text-sm"
+        >
+          {showMonthlyReport ? "Hide Monthly Report" : `Show Monthly Report (${year})`}
+        </button>
+        {isAdmin && (
           <button
             onClick={() => setIsSettingsModalOpen(true)}
             className="px-3 py-2 rounded border bg-white text-sm"
           >
             Admin Payroll Settings
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       <div className="mb-6 grid grid-cols-4 gap-4 text-center text-sm font-medium">
         <div className="bg-green-50 p-3 rounded">
@@ -570,14 +605,43 @@ export default function Calendar() {
         </div>
       </div>
 
-      <div className="mb-4 flex justify-end">
-        <button
-          onClick={() => setShowMonthlyReport((prev) => !prev)}
-          className="px-3 py-1 rounded border bg-white text-sm"
-        >
-          {showMonthlyReport ? "Hide Monthly Report" : `Show Monthly Report (${year})`}
-        </button>
-      </div>
+      {showRecurringPayments && (
+        <div className="mb-6 rounded-xl border bg-white p-4 shadow-sm overflow-x-auto">
+          <h3 className="text-sm font-semibold mb-3">
+            Recurring Payments - {currentMonth.toLocaleString("default", { month: "long" })} {year}
+          </h3>
+
+          {recurringPaymentsForMonth.length === 0 ? (
+            <p className="text-sm text-gray-500">No recurring payments this month.</p>
+          ) : (
+            <>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left border-b">
+                    <th className="py-2">Date</th>
+                    <th className="py-2">Name</th>
+                    <th className="py-2">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recurringPaymentsForMonth.map((entry) => (
+                    <tr key={entry.id} className="border-b last:border-b-0">
+                      <td className="py-2">
+                        {currentMonth.toLocaleString("default", { month: "short" })} {entry.day}
+                      </td>
+                      <td className="py-2">{entry.name}</td>
+                      <td className="py-2 text-red-700">${entry.amount.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="mt-3 text-right text-sm font-semibold">
+                Subtotal: ${recurringSubtotal.toLocaleString()}
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {showMonthlyReport && (
         <div className="mb-6 rounded-xl border bg-white p-4 shadow-sm overflow-x-auto">
