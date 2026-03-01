@@ -123,6 +123,10 @@ export default function Calendar() {
   const [payrollDraft, setPayrollDraft] = useState<PayrollSettings>(DEFAULT_PAYROLL_SETTINGS)
   const [settingsMessage, setSettingsMessage] = useState("")
   const [settingsError, setSettingsError] = useState("")
+  const [adminCommissionDrafts, setAdminCommissionDrafts] = useState<Record<number, string>>({})
+  const [adminCommissionMessage, setAdminCommissionMessage] = useState("")
+  const [adminCommissionError, setAdminCommissionError] = useState("")
+  const [savingCommissionDay, setSavingCommissionDay] = useState<number | null>(null)
 
   const adminEmails = useMemo(() => {
     return (process.env.NEXT_PUBLIC_ADMIN_EMAILS ?? "bgeary617@gmail.com")
@@ -438,6 +442,35 @@ export default function Calendar() {
     setCommissionError("")
   }
 
+  const saveCommissionForDay = async (day: number, parsed: number) => {
+    const dateKey = getDateKey(year, month, day)
+    const existing = getCommissionRecordForDate(day)
+
+    if (parsed === 0) {
+      if (existing?.id) {
+        const { error } = await supabase
+          .from("paychecks")
+          .delete()
+          .eq("id", existing.id)
+        return error?.message ?? null
+      }
+      return null
+    }
+
+    if (existing?.id) {
+      const { error } = await supabase
+        .from("paychecks")
+        .update({ commission_amount: parsed })
+        .eq("id", existing.id)
+      return error?.message ?? null
+    }
+
+    const { error } = await supabase
+      .from("paychecks")
+      .insert([{ date: dateKey, commission_amount: parsed }])
+    return error?.message ?? null
+  }
+
   const saveCommission = async () => {
     if (selectedCommissionDay === null) return
 
@@ -447,33 +480,8 @@ export default function Calendar() {
       return
     }
 
-    const dateKey = getDateKey(year, month, selectedCommissionDay)
-    const existing = getCommissionRecordForDate(selectedCommissionDay)
-
     setIsSavingCommission(true)
-    let error: string | null = null
-
-    if (parsed === 0) {
-      if (existing?.id) {
-        const { error: deleteError } = await supabase
-          .from("paychecks")
-          .delete()
-          .eq("id", existing.id)
-        error = deleteError?.message ?? null
-      }
-    } else if (existing?.id) {
-      const { error: updateError } = await supabase
-        .from("paychecks")
-        .update({ commission_amount: parsed })
-        .eq("id", existing.id)
-      error = updateError?.message ?? null
-    } else {
-      const { error: insertError } = await supabase
-        .from("paychecks")
-        .insert([{ date: dateKey, commission_amount: parsed }])
-      error = insertError?.message ?? null
-    }
-
+    const error = await saveCommissionForDay(selectedCommissionDay, parsed)
     setIsSavingCommission(false)
 
     if (error) {
@@ -483,6 +491,43 @@ export default function Calendar() {
 
     await fetchCommissions()
     closeCommissionModal()
+  }
+
+  const openSettingsModal = () => {
+    const drafts: Record<number, string> = {}
+    for (let day = 1; day <= daysInMonth; day++) {
+      if (!isPaycheckDay(day)) continue
+      drafts[day] = String(getCommissionForDate(day))
+    }
+    setAdminCommissionDrafts(drafts)
+    setAdminCommissionMessage("")
+    setAdminCommissionError("")
+    setIsSettingsModalOpen(true)
+  }
+
+  const saveAdminCommissionForDay = async (day: number) => {
+    setAdminCommissionMessage("")
+    setAdminCommissionError("")
+
+    const parsed = Number(adminCommissionDrafts[day] ?? "")
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      setAdminCommissionError("Commission must be a number 0 or greater.")
+      return
+    }
+
+    setSavingCommissionDay(day)
+    const error = await saveCommissionForDay(day, parsed)
+    setSavingCommissionDay(null)
+
+    if (error) {
+      setAdminCommissionError(error)
+      return
+    }
+
+    await fetchCommissions()
+    setAdminCommissionMessage(
+      `Saved commission for ${currentMonth.toLocaleString("default", { month: "short" })} ${day}.`
+    )
   }
 
   const savePayrollSettings = () => {
@@ -533,6 +578,7 @@ export default function Calendar() {
   const daysInMonth = lastDay.getDate()
   const startingWeekday = firstDay.getDay()
   const days = Array.from({ length: daysInMonth }, (_, index) => index + 1)
+  const paydayDaysInMonth = days.filter((day) => isPaycheckDay(day))
   const summary = calculateMonthSummary(year, month)
 
   const monthlyReport = Array.from({ length: 12 }, (_, monthIndex) => {
@@ -612,7 +658,7 @@ export default function Calendar() {
         </button>
         {isAdmin && (
           <button
-            onClick={() => setIsSettingsModalOpen(true)}
+            onClick={openSettingsModal}
             className="px-3 py-2 rounded border bg-white text-sm"
           >
             Admin Payroll Settings
@@ -1012,7 +1058,7 @@ export default function Calendar() {
             onClick={() => setIsSettingsModalOpen(false)}
           />
 
-          <div className="relative bg-white p-6 rounded-xl w-full max-w-2xl shadow-xl">
+          <div className="relative bg-white p-6 rounded-xl w-full max-w-2xl shadow-xl max-h-[85vh] overflow-y-auto">
             <h3 className="text-lg font-semibold mb-4">Admin Payroll Settings</h3>
 
             <div className="grid gap-3 md:grid-cols-3">
@@ -1060,6 +1106,56 @@ export default function Calendar() {
 
             {settingsError && <p className="mt-3 text-sm text-red-600">{settingsError}</p>}
             {settingsMessage && <p className="mt-3 text-sm text-green-600">{settingsMessage}</p>}
+
+            <div className="mt-6 border-t pt-4">
+              <h4 className="text-sm font-semibold mb-3">
+                Commissions - {currentMonth.toLocaleString("default", { month: "long" })} {year}
+              </h4>
+
+              {paydayDaysInMonth.length === 0 ? (
+                <p className="text-sm text-gray-500">No paydays in this month.</p>
+              ) : (
+                <div className="space-y-2">
+                  {paydayDaysInMonth.map((day) => (
+                    <div
+                      key={day}
+                      className="grid grid-cols-[1fr_1fr_auto] items-center gap-2"
+                    >
+                      <div className="text-sm text-gray-700">
+                        {currentMonth.toLocaleString("default", { month: "short" })} {day}
+                      </div>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={adminCommissionDrafts[day] ?? "0"}
+                        onChange={(event) =>
+                          setAdminCommissionDrafts((prev) => ({
+                            ...prev,
+                            [day]: event.target.value
+                          }))
+                        }
+                        className="w-full border rounded p-2 text-sm"
+                      />
+                      <button
+                        onClick={() => saveAdminCommissionForDay(day)}
+                        className="px-3 py-2 rounded border text-sm"
+                        disabled={savingCommissionDay === day}
+                      >
+                        {savingCommissionDay === day ? "Saving..." : "Save"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {adminCommissionError && (
+                <p className="mt-3 text-sm text-red-600">{adminCommissionError}</p>
+              )}
+              {adminCommissionMessage && (
+                <p className="mt-3 text-sm text-green-600">{adminCommissionMessage}</p>
+              )}
+            </div>
 
             <div className="mt-4 flex justify-between">
               <button
