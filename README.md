@@ -74,6 +74,81 @@ Stores the monthly starting balance used for reconciliation.
 - Starting balance is persisted in `starting_balances` and falls back to a default if no row exists.
 - Data is fetched client-side directly from Supabase.
 - Admin-only payroll settings panel is shown when the signed-in email matches `NEXT_PUBLIC_ADMIN_EMAILS` (comma-separated).
+
+## Daily Email Due Reports
+
+This app includes a scheduled endpoint at `/api/notifications/daily` for daily due-payment emails.
+
+### Environment Variables
+
+Set these in Vercel:
+
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `CRON_SECRET`
+- `RESEND_API_KEY`
+- `NOTIFICATION_EMAIL_FROM` (for example `Budget Calendar <no-reply@yourdomain.com>`)
+
+`NEXT_PUBLIC_SUPABASE_URL` must already be set.
+
+### Notification Settings Table
+
+Run this in Supabase SQL Editor:
+
+```sql
+create table if not exists notification_settings (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) default auth.uid(),
+  email text not null,
+  timezone text not null default 'America/New_York',
+  enabled boolean not null default true,
+  created_at timestamptz default now()
+);
+
+create unique index if not exists notification_settings_user_unique
+on notification_settings (user_id);
+
+alter table notification_settings enable row level security;
+
+drop policy if exists "notification_settings_select_own" on notification_settings;
+drop policy if exists "notification_settings_insert_own" on notification_settings;
+drop policy if exists "notification_settings_update_own" on notification_settings;
+drop policy if exists "notification_settings_delete_own" on notification_settings;
+
+create policy "notification_settings_select_own"
+on notification_settings for select
+using (auth.uid() = user_id);
+
+create policy "notification_settings_insert_own"
+on notification_settings for insert
+with check (auth.uid() = user_id);
+
+create policy "notification_settings_update_own"
+on notification_settings for update
+using (auth.uid() = user_id);
+
+create policy "notification_settings_delete_own"
+on notification_settings for delete
+using (auth.uid() = user_id);
+```
+
+Insert your initial setting:
+
+```sql
+insert into notification_settings (user_id, email, timezone, enabled)
+values ('YOUR_USER_ID', 'you@example.com', 'America/New_York', true)
+on conflict (user_id) do update
+set email = excluded.email,
+    timezone = excluded.timezone,
+    enabled = excluded.enabled;
+```
+
+### Manual Test
+
+After deployment, test the route manually:
+
+```bash
+curl -H "Authorization: Bearer YOUR_CRON_SECRET" https://YOUR_APP_URL/api/notifications/daily
+```
 - Mobile-friendly quick entry page: `/mobile-entry` (saves non-recurring expense rows with name `Wife Purchases`).
 
 ## Scripts
