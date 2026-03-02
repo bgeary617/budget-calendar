@@ -840,6 +840,9 @@ export default function Calendar() {
     (sum, entry) => sum + entry.amount,
     0
   )
+  const recurringRemainingSubtotal = recurringPaymentsForMonth.reduce((sum, entry) => {
+    return isRecurringPaid(entry) ? sum : sum + entry.amount
+  }, 0)
 
   const selectedDayEntries = selectedDay === null ? [] : getEditableEntriesForDay(selectedDay)
 
@@ -1086,8 +1089,11 @@ export default function Calendar() {
                   ))}
                 </tbody>
               </table>
-              <div className="mt-3 text-right text-sm font-semibold">
-                Subtotal: ${recurringSubtotal.toLocaleString()}
+              <div className="mt-3 flex flex-wrap justify-end gap-4 text-sm font-semibold">
+                <span>Subtotal: ${recurringSubtotal.toLocaleString()}</span>
+                <span className="text-red-700">
+                  Remaining to be paid: ${recurringRemainingSubtotal.toLocaleString()}
+                </span>
               </div>
               {recurringDayError && (
                 <p className="mt-2 text-sm text-red-600">{recurringDayError}</p>
