@@ -51,6 +51,14 @@ type Toast = {
   type: "error" | "success"
 }
 
+type NotificationSetting = {
+  id?: string
+  user_id?: string
+  email: string
+  timezone: string
+  enabled: boolean
+}
+
 type PayrollSettings = {
   basePay: number
   paycheckStartDate: string
@@ -139,6 +147,7 @@ export default function Calendar() {
   const [showMonthlyReport, setShowMonthlyReport] = useState(false)
   const [showRecurringPayments, setShowRecurringPayments] = useState(false)
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
+  const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false)
   const [recurringDayDrafts, setRecurringDayDrafts] = useState<Record<string, string>>({})
   const [recurringDayMessage, setRecurringDayMessage] = useState("")
   const [recurringDayError, setRecurringDayError] = useState("")
@@ -155,6 +164,12 @@ export default function Calendar() {
   const [adminCommissionMessage, setAdminCommissionMessage] = useState("")
   const [adminCommissionError, setAdminCommissionError] = useState("")
   const [savingCommissionDay, setSavingCommissionDay] = useState<number | null>(null)
+  const [notificationSettingId, setNotificationSettingId] = useState<string | null>(null)
+  const [notificationEmail, setNotificationEmail] = useState("")
+  const [notificationTimezone, setNotificationTimezone] = useState("America/New_York")
+  const [notificationEnabled, setNotificationEnabled] = useState(true)
+  const [notificationError, setNotificationError] = useState("")
+  const [isSavingNotification, setIsSavingNotification] = useState(false)
 
   const adminEmails = useMemo(() => {
     return (process.env.NEXT_PUBLIC_ADMIN_EMAILS ?? "bgeary617@gmail.com")
@@ -176,7 +191,30 @@ export default function Calendar() {
   useEffect(() => {
     const loadUser = async () => {
       const { data } = await supabase.auth.getUser()
-      setCurrentUserEmail(data.user?.email?.toLowerCase() ?? null)
+      const userEmail = data.user?.email?.toLowerCase() ?? null
+      setCurrentUserEmail(userEmail)
+      if (userEmail) {
+        setNotificationEmail(userEmail)
+      }
+
+      const { data: notificationData, error: notificationError } = await supabase
+        .from("notification_settings")
+        .select("*")
+        .limit(1)
+        .maybeSingle()
+
+      if (notificationError) {
+        pushToast(notificationError.message)
+        return
+      }
+
+      if (!notificationData) return
+
+      const setting = notificationData as NotificationSetting
+      setNotificationSettingId(setting.id ?? null)
+      setNotificationEmail(setting.email ?? "")
+      setNotificationTimezone(setting.timezone ?? "America/New_York")
+      setNotificationEnabled(setting.enabled ?? true)
     }
 
     const raw = localStorage.getItem(PAYROLL_STORAGE_KEY)
@@ -811,6 +849,76 @@ export default function Calendar() {
     localStorage.setItem(PAYROLL_STORAGE_KEY, JSON.stringify(DEFAULT_PAYROLL_SETTINGS))
   }
 
+  const openNotificationModal = () => {
+    setNotificationError("")
+    setIsNotificationModalOpen(true)
+  }
+
+  const saveNotificationSettings = async () => {
+    setNotificationError("")
+
+    const email = notificationEmail.trim().toLowerCase()
+    const timezone = notificationTimezone.trim()
+
+    if (!email || !email.includes("@")) {
+      const message = "Enter a valid notification email."
+      setNotificationError(message)
+      pushToast(message)
+      return
+    }
+
+    if (!timezone) {
+      const message = "Timezone is required."
+      setNotificationError(message)
+      pushToast(message)
+      return
+    }
+
+    setIsSavingNotification(true)
+
+    let errorMessage: string | null = null
+
+    if (notificationSettingId) {
+      const { error } = await supabase
+        .from("notification_settings")
+        .update({
+          email,
+          timezone,
+          enabled: notificationEnabled
+        })
+        .eq("id", notificationSettingId)
+      errorMessage = error?.message ?? null
+    } else {
+      const { data, error } = await supabase
+        .from("notification_settings")
+        .insert([
+          {
+            email,
+            timezone,
+            enabled: notificationEnabled
+          }
+        ])
+        .select("id")
+        .single()
+
+      errorMessage = error?.message ?? null
+      if (!error && data?.id) {
+        setNotificationSettingId(data.id)
+      }
+    }
+
+    setIsSavingNotification(false)
+
+    if (errorMessage) {
+      setNotificationError(errorMessage)
+      pushToast(errorMessage)
+      return
+    }
+
+    pushToast("Notification settings saved.", "success")
+    setIsNotificationModalOpen(false)
+  }
+
   const firstDay = new Date(year, month, 1)
   const lastDay = new Date(year, month + 1, 0)
   const daysInMonth = lastDay.getDate()
@@ -925,6 +1033,12 @@ export default function Calendar() {
         >
           Open Debts
         </Link>
+        <button
+          onClick={openNotificationModal}
+          className="px-3 py-2 rounded border bg-white text-sm"
+        >
+          Notification Settings
+        </button>
         <button
           onClick={openBalanceModal}
           className="px-3 py-2 rounded border bg-white text-sm"
@@ -1410,6 +1524,70 @@ export default function Calendar() {
                 disabled={isSavingCommission}
               >
                 {isSavingCommission ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isNotificationModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setIsNotificationModalOpen(false)}
+          />
+
+          <div className="relative bg-white p-6 rounded-xl w-full max-w-md shadow-xl">
+            <h3 className="text-lg font-semibold mb-4">Notification Settings</h3>
+
+            <label className="mb-2 block text-sm font-medium text-gray-700">
+              Notification Email
+            </label>
+            <input
+              value={notificationEmail}
+              onChange={(event) => setNotificationEmail(event.target.value)}
+              type="email"
+              className="w-full border p-2 mb-3 rounded"
+              placeholder="you@example.com"
+            />
+
+            <label className="mb-2 block text-sm font-medium text-gray-700">
+              Timezone
+            </label>
+            <input
+              value={notificationTimezone}
+              onChange={(event) => setNotificationTimezone(event.target.value)}
+              type="text"
+              className="w-full border p-2 mb-3 rounded"
+              placeholder="America/New_York"
+            />
+
+            <label className="mb-4 flex items-center gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={notificationEnabled}
+                onChange={(event) => setNotificationEnabled(event.target.checked)}
+              />
+              Enable daily payment due emails
+            </label>
+
+            {notificationError && (
+              <p className="text-sm text-red-600 mb-3">{notificationError}</p>
+            )}
+
+            <div className="flex justify-between">
+              <button
+                onClick={() => setIsNotificationModalOpen(false)}
+                className="text-gray-500"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveNotificationSettings}
+                disabled={isSavingNotification}
+                className="bg-black text-white px-4 py-2 rounded disabled:opacity-60"
+              >
+                {isSavingNotification ? "Saving..." : "Save"}
               </button>
             </div>
           </div>
