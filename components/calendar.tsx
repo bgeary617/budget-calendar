@@ -45,6 +45,12 @@ type RecurringPaidStatus = {
   paid: boolean
 }
 
+type OneTimePaidStatus = {
+  id?: string
+  entry_id: number
+  paid: boolean
+}
+
 type Toast = {
   id: number
   message: string
@@ -145,6 +151,7 @@ export default function Calendar() {
   const [type, setType] = useState<"expense" | "income">("expense")
 
   const [showMonthlyReport, setShowMonthlyReport] = useState(false)
+  const [showOneTimePayments, setShowOneTimePayments] = useState(false)
   const [showRecurringPayments, setShowRecurringPayments] = useState(false)
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
   const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false)
@@ -153,6 +160,8 @@ export default function Calendar() {
   const [recurringDayError, setRecurringDayError] = useState("")
   const [savingRecurringEntryId, setSavingRecurringEntryId] = useState<number | null>(null)
   const [savingPaidEntryId, setSavingPaidEntryId] = useState<number | null>(null)
+  const [oneTimePaidStatuses, setOneTimePaidStatuses] = useState<OneTimePaidStatus[]>([])
+  const [savingOneTimePaidEntryId, setSavingOneTimePaidEntryId] = useState<number | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
 
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null)
@@ -243,6 +252,7 @@ export default function Calendar() {
     fetchStartingBalances()
     fetchRecurringDayOverrides()
     fetchRecurringPaidStatuses()
+    fetchOneTimePaidStatuses()
   }, [month, year])
 
   const fetchEntries = async () => {
@@ -268,6 +278,11 @@ export default function Calendar() {
   const fetchRecurringPaidStatuses = async () => {
     const { data } = await supabase.from("recurring_payment_paid_status").select("*")
     if (data) setRecurringPaidStatuses(data as RecurringPaidStatus[])
+  }
+
+  const fetchOneTimePaidStatuses = async () => {
+    const { data } = await supabase.from("one_time_payment_paid_status").select("*")
+    if (data) setOneTimePaidStatuses(data as OneTimePaidStatus[])
   }
 
   const isPaycheckDayForDate = (targetYear: number, targetMonth: number, targetDay: number) => {
@@ -327,6 +342,15 @@ export default function Calendar() {
   const isRecurringPaid = (entry: Entry) => {
     if (entry.recurring !== "monthly" || entry.id == null) return false
     return !!getRecurringPaidStatusForEntry(entry.id, year, month)?.paid
+  }
+
+  const getOneTimePaidStatusForEntry = (entryId: number) => {
+    return oneTimePaidStatuses.find((status) => status.entry_id === entryId)
+  }
+
+  const isOneTimePaid = (entry: Entry) => {
+    if (entry.recurring !== "none" || entry.id == null) return false
+    return !!getOneTimePaidStatusForEntry(entry.id)?.paid
   }
 
   const currentStartingBalanceRecord = startingBalances.find(
@@ -696,6 +720,51 @@ export default function Calendar() {
     pushToast(nextPaid ? `${entry.name} marked paid.` : `${entry.name} marked unpaid.`, "success")
   }
 
+  const toggleOneTimePaidStatus = async (entry: Entry, nextPaid: boolean) => {
+    if (entry.id == null) return
+
+    const existing = getOneTimePaidStatusForEntry(entry.id)
+    setSavingOneTimePaidEntryId(entry.id)
+
+    let errorMessage: string | null = null
+
+    if (!nextPaid) {
+      if (existing?.id) {
+        const { error } = await supabase
+          .from("one_time_payment_paid_status")
+          .delete()
+          .eq("id", existing.id)
+        errorMessage = error?.message ?? null
+      }
+    } else if (existing?.id) {
+      const { error } = await supabase
+        .from("one_time_payment_paid_status")
+        .update({ paid: true })
+        .eq("id", existing.id)
+      errorMessage = error?.message ?? null
+    } else {
+      const { error } = await supabase
+        .from("one_time_payment_paid_status")
+        .insert([
+          {
+            entry_id: entry.id,
+            paid: true
+          }
+        ])
+      errorMessage = error?.message ?? null
+    }
+
+    setSavingOneTimePaidEntryId(null)
+
+    if (errorMessage) {
+      pushToast(errorMessage)
+      return
+    }
+
+    await fetchOneTimePaidStatuses()
+    pushToast(nextPaid ? `${entry.name} marked paid.` : `${entry.name} marked unpaid.`, "success")
+  }
+
   const openCommissionModal = (day: number) => {
     setSelectedCommissionDay(day)
     setCommissionInput(String(getCommissionForDate(day)))
@@ -951,6 +1020,20 @@ export default function Calendar() {
   const recurringRemainingSubtotal = recurringPaymentsForMonth.reduce((sum, entry) => {
     return isRecurringPaid(entry) ? sum : sum + entry.amount
   }, 0)
+  const oneTimePaymentsForMonth = entries
+    .filter((entry) => {
+      return (
+        entry.type === "expense" &&
+        entry.recurring === "none" &&
+        entry.month === month &&
+        entry.year === year
+      )
+    })
+    .sort((a, b) => a.day - b.day || a.name.localeCompare(b.name))
+  const oneTimeSubtotal = oneTimePaymentsForMonth.reduce((sum, entry) => sum + entry.amount, 0)
+  const oneTimeRemainingSubtotal = oneTimePaymentsForMonth.reduce((sum, entry) => {
+    return isOneTimePaid(entry) ? sum : sum + entry.amount
+  }, 0)
 
   const selectedDayEntries = selectedDay === null ? [] : getEditableEntriesForDay(selectedDay)
 
@@ -1046,6 +1129,14 @@ export default function Calendar() {
           Set Starting Balance
         </button>
         <button
+          onClick={() => setShowOneTimePayments((prev) => !prev)}
+          className="px-3 py-2 rounded border bg-white text-sm"
+        >
+          {showOneTimePayments
+            ? "Hide Month's One-Time Payments"
+            : "Show Month's One-Time Payments"}
+        </button>
+        <button
           onClick={() => setShowRecurringPayments((prev) => !prev)}
           className="px-3 py-2 rounded border bg-white text-sm"
         >
@@ -1092,6 +1183,94 @@ export default function Calendar() {
           </div>
         </div>
       </div>
+
+      {showOneTimePayments && (
+        <div className="mb-6 rounded-xl border bg-white p-4 shadow-sm overflow-x-auto">
+          <h3 className="text-sm font-semibold mb-3">
+            One-Time Payments - {currentMonth.toLocaleString("default", { month: "long" })} {year}
+          </h3>
+
+          {oneTimePaymentsForMonth.length === 0 ? (
+            <p className="text-sm text-gray-500">No one-time payments this month.</p>
+          ) : (
+            <>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left border-b">
+                    <th className="py-2">Date</th>
+                    <th className="py-2">Name</th>
+                    <th className="py-2">Amount</th>
+                    <th className="py-2">Paid</th>
+                    <th className="py-2">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {oneTimePaymentsForMonth.map((entry) => (
+                    <tr
+                      key={entry.id}
+                      className={`border-b last:border-b-0 ${
+                        isOneTimePaid(entry) ? "bg-gray-50 text-gray-500" : ""
+                      }`}
+                    >
+                      <td className="py-2">
+                        {currentMonth.toLocaleString("default", { month: "short" })} {entry.day}
+                      </td>
+                      <td className={`py-2 ${isOneTimePaid(entry) ? "line-through" : ""}`}>
+                        {entry.name}
+                      </td>
+                      <td
+                        className={`py-2 ${
+                          isOneTimePaid(entry) ? "line-through text-gray-500" : "text-red-700"
+                        }`}
+                      >
+                        ${entry.amount.toLocaleString()}
+                      </td>
+                      <td className="py-2">
+                        {entry.id ? (
+                          <input
+                            type="checkbox"
+                            checked={isOneTimePaid(entry)}
+                            onChange={(event) => toggleOneTimePaidStatus(entry, event.target.checked)}
+                            disabled={savingOneTimePaidEntryId === entry.id}
+                            className="h-4 w-4"
+                          />
+                        ) : (
+                          "-"
+                        )}
+                      </td>
+                      <td className="py-2">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              setSelectedDay(entry.day)
+                              openEntryEditor(entry)
+                            }}
+                            className="px-2 py-1 rounded border text-xs"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleDeleteEntry(entry)}
+                            className="px-2 py-1 rounded border text-xs text-red-600"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="mt-3 flex flex-wrap justify-end gap-4 text-sm font-semibold">
+                <span>Subtotal: ${oneTimeSubtotal.toLocaleString()}</span>
+                <span className="text-red-700">
+                  Remaining to be paid: ${oneTimeRemainingSubtotal.toLocaleString()}
+                </span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {showRecurringPayments && (
         <div className="mb-6 rounded-xl border bg-white p-4 shadow-sm overflow-x-auto">
