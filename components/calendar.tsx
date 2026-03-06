@@ -51,6 +51,20 @@ type OneTimePaidStatus = {
   paid: boolean
 }
 
+type RecurringScheduledStatus = {
+  id?: string
+  entry_id: number
+  year: number
+  month: number
+  scheduled: boolean
+}
+
+type OneTimeScheduledStatus = {
+  id?: string
+  entry_id: number
+  scheduled: boolean
+}
+
 type Toast = {
   id: number
   message: string
@@ -130,6 +144,7 @@ export default function Calendar() {
   const [startingBalances, setStartingBalances] = useState<StartingBalance[]>([])
   const [recurringDayOverrides, setRecurringDayOverrides] = useState<RecurringDayOverride[]>([])
   const [recurringPaidStatuses, setRecurringPaidStatuses] = useState<RecurringPaidStatus[]>([])
+  const [recurringScheduledStatuses, setRecurringScheduledStatuses] = useState<RecurringScheduledStatus[]>([])
   const [hoveredDay, setHoveredDay] = useState<number | null>(null)
 
   const [selectedDay, setSelectedDay] = useState<number | null>(null)
@@ -161,7 +176,10 @@ export default function Calendar() {
   const [savingRecurringEntryId, setSavingRecurringEntryId] = useState<number | null>(null)
   const [savingPaidEntryId, setSavingPaidEntryId] = useState<number | null>(null)
   const [oneTimePaidStatuses, setOneTimePaidStatuses] = useState<OneTimePaidStatus[]>([])
+  const [oneTimeScheduledStatuses, setOneTimeScheduledStatuses] = useState<OneTimeScheduledStatus[]>([])
   const [savingOneTimePaidEntryId, setSavingOneTimePaidEntryId] = useState<number | null>(null)
+  const [savingScheduledEntryId, setSavingScheduledEntryId] = useState<number | null>(null)
+  const [savingOneTimeScheduledEntryId, setSavingOneTimeScheduledEntryId] = useState<number | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
 
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null)
@@ -252,7 +270,9 @@ export default function Calendar() {
     fetchStartingBalances()
     fetchRecurringDayOverrides()
     fetchRecurringPaidStatuses()
+    fetchRecurringScheduledStatuses()
     fetchOneTimePaidStatuses()
+    fetchOneTimeScheduledStatuses()
   }, [month, year])
 
   const fetchEntries = async () => {
@@ -280,9 +300,19 @@ export default function Calendar() {
     if (data) setRecurringPaidStatuses(data as RecurringPaidStatus[])
   }
 
+  const fetchRecurringScheduledStatuses = async () => {
+    const { data } = await supabase.from("recurring_payment_scheduled_status").select("*")
+    if (data) setRecurringScheduledStatuses(data as RecurringScheduledStatus[])
+  }
+
   const fetchOneTimePaidStatuses = async () => {
     const { data } = await supabase.from("one_time_payment_paid_status").select("*")
     if (data) setOneTimePaidStatuses(data as OneTimePaidStatus[])
+  }
+
+  const fetchOneTimeScheduledStatuses = async () => {
+    const { data } = await supabase.from("one_time_payment_scheduled_status").select("*")
+    if (data) setOneTimeScheduledStatuses(data as OneTimeScheduledStatus[])
   }
 
   const isPaycheckDayForDate = (targetYear: number, targetMonth: number, targetDay: number) => {
@@ -344,6 +374,24 @@ export default function Calendar() {
     return !!getRecurringPaidStatusForEntry(entry.id, year, month)?.paid
   }
 
+  const getRecurringScheduledStatusForEntry = (
+    entryId: number,
+    targetYear: number,
+    targetMonth: number
+  ) => {
+    return recurringScheduledStatuses.find(
+      (status) =>
+        status.entry_id === entryId &&
+        status.year === targetYear &&
+        status.month === targetMonth
+    )
+  }
+
+  const isRecurringScheduled = (entry: Entry) => {
+    if (entry.recurring !== "monthly" || entry.id == null) return false
+    return !!getRecurringScheduledStatusForEntry(entry.id, year, month)?.scheduled
+  }
+
   const getOneTimePaidStatusForEntry = (entryId: number) => {
     return oneTimePaidStatuses.find((status) => status.entry_id === entryId)
   }
@@ -351,6 +399,15 @@ export default function Calendar() {
   const isOneTimePaid = (entry: Entry) => {
     if (entry.recurring !== "none" || entry.id == null) return false
     return !!getOneTimePaidStatusForEntry(entry.id)?.paid
+  }
+
+  const getOneTimeScheduledStatusForEntry = (entryId: number) => {
+    return oneTimeScheduledStatuses.find((status) => status.entry_id === entryId)
+  }
+
+  const isOneTimeScheduled = (entry: Entry) => {
+    if (entry.recurring !== "none" || entry.id == null) return false
+    return !!getOneTimeScheduledStatusForEntry(entry.id)?.scheduled
   }
 
   const currentStartingBalanceRecord = startingBalances.find(
@@ -720,6 +777,56 @@ export default function Calendar() {
     pushToast(nextPaid ? `${entry.name} marked paid.` : `${entry.name} marked unpaid.`, "success")
   }
 
+  const toggleRecurringScheduledStatus = async (entry: Entry, nextScheduled: boolean) => {
+    if (entry.id == null) return
+
+    const existing = getRecurringScheduledStatusForEntry(entry.id, year, month)
+    setSavingScheduledEntryId(entry.id)
+
+    let errorMessage: string | null = null
+
+    if (!nextScheduled) {
+      if (existing?.id) {
+        const { error } = await supabase
+          .from("recurring_payment_scheduled_status")
+          .delete()
+          .eq("id", existing.id)
+        errorMessage = error?.message ?? null
+      }
+    } else if (existing?.id) {
+      const { error } = await supabase
+        .from("recurring_payment_scheduled_status")
+        .update({ scheduled: true })
+        .eq("id", existing.id)
+      errorMessage = error?.message ?? null
+    } else {
+      const { error } = await supabase
+        .from("recurring_payment_scheduled_status")
+        .insert([
+          {
+            entry_id: entry.id,
+            year,
+            month,
+            scheduled: true
+          }
+        ])
+      errorMessage = error?.message ?? null
+    }
+
+    setSavingScheduledEntryId(null)
+
+    if (errorMessage) {
+      pushToast(errorMessage)
+      return
+    }
+
+    await fetchRecurringScheduledStatuses()
+    pushToast(
+      nextScheduled ? `${entry.name} marked scheduled.` : `${entry.name} unmarked scheduled.`,
+      "success"
+    )
+  }
+
   const toggleOneTimePaidStatus = async (entry: Entry, nextPaid: boolean) => {
     if (entry.id == null) return
 
@@ -763,6 +870,54 @@ export default function Calendar() {
 
     await fetchOneTimePaidStatuses()
     pushToast(nextPaid ? `${entry.name} marked paid.` : `${entry.name} marked unpaid.`, "success")
+  }
+
+  const toggleOneTimeScheduledStatus = async (entry: Entry, nextScheduled: boolean) => {
+    if (entry.id == null) return
+
+    const existing = getOneTimeScheduledStatusForEntry(entry.id)
+    setSavingOneTimeScheduledEntryId(entry.id)
+
+    let errorMessage: string | null = null
+
+    if (!nextScheduled) {
+      if (existing?.id) {
+        const { error } = await supabase
+          .from("one_time_payment_scheduled_status")
+          .delete()
+          .eq("id", existing.id)
+        errorMessage = error?.message ?? null
+      }
+    } else if (existing?.id) {
+      const { error } = await supabase
+        .from("one_time_payment_scheduled_status")
+        .update({ scheduled: true })
+        .eq("id", existing.id)
+      errorMessage = error?.message ?? null
+    } else {
+      const { error } = await supabase
+        .from("one_time_payment_scheduled_status")
+        .insert([
+          {
+            entry_id: entry.id,
+            scheduled: true
+          }
+        ])
+      errorMessage = error?.message ?? null
+    }
+
+    setSavingOneTimeScheduledEntryId(null)
+
+    if (errorMessage) {
+      pushToast(errorMessage)
+      return
+    }
+
+    await fetchOneTimeScheduledStatuses()
+    pushToast(
+      nextScheduled ? `${entry.name} marked scheduled.` : `${entry.name} unmarked scheduled.`,
+      "success"
+    )
   }
 
   const openCommissionModal = (day: number) => {
@@ -1200,6 +1355,7 @@ export default function Calendar() {
                     <th className="py-2">Date</th>
                     <th className="py-2">Name</th>
                     <th className="py-2">Amount</th>
+                    <th className="py-2">Scheduled</th>
                     <th className="py-2">Paid</th>
                     <th className="py-2">Actions</th>
                   </tr>
@@ -1224,6 +1380,21 @@ export default function Calendar() {
                         }`}
                       >
                         ${entry.amount.toLocaleString()}
+                      </td>
+                      <td className="py-2">
+                        {entry.id ? (
+                          <input
+                            type="checkbox"
+                            checked={isOneTimeScheduled(entry)}
+                            onChange={(event) =>
+                              toggleOneTimeScheduledStatus(entry, event.target.checked)
+                            }
+                            disabled={savingOneTimeScheduledEntryId === entry.id}
+                            className="h-4 w-4"
+                          />
+                        ) : (
+                          "-"
+                        )}
                       </td>
                       <td className="py-2">
                         {entry.id ? (
@@ -1289,6 +1460,7 @@ export default function Calendar() {
                     <th className="py-2">Name</th>
                     <th className="py-2">Amount</th>
                     <th className="py-2">Paid Day</th>
+                    <th className="py-2">Scheduled</th>
                     <th className="py-2">Paid</th>
                     <th className="py-2">Actions</th>
                   </tr>
@@ -1332,6 +1504,21 @@ export default function Calendar() {
                               }))
                             }
                             className="w-20 border rounded p-1 text-xs"
+                          />
+                        ) : (
+                          "-"
+                        )}
+                      </td>
+                      <td className="py-2">
+                        {entry.id ? (
+                          <input
+                            type="checkbox"
+                            checked={isRecurringScheduled(entry)}
+                            onChange={(event) =>
+                              toggleRecurringScheduledStatus(entry, event.target.checked)
+                            }
+                            disabled={savingScheduledEntryId === entry.id}
+                            className="h-4 w-4"
                           />
                         ) : (
                           "-"
