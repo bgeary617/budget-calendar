@@ -74,6 +74,31 @@ Stores the monthly starting balance used for reconciliation.
 - Starting balance is persisted in `starting_balances` and falls back to a default if no row exists.
 - Data is fetched client-side directly from Supabase.
 - Admin-only payroll settings panel is shown when the signed-in email matches `NEXT_PUBLIC_ADMIN_EMAILS` (comma-separated).
+- Mobile-friendly quick entry page: `/mobile-entry` (saves non-recurring expense rows with name `Wife Purchases`).
+
+## Monthly CSV Import
+
+Use the `Import Month CSV` button on the calendar page to bulk import monthly transactions.
+You can upload either:
+
+- a clean `.csv` file, or
+- the raw `.txt` bank statement export (Santander-style statement text)
+
+Required CSV columns:
+
+- `day`
+- `name`
+- `amount`
+- `recurring` (`none` or `monthly`)
+- `type` (`expense` or `income`)
+- `month` (0-11)
+- `year` (4-digit year)
+
+Import options include:
+
+- `Use current viewed month/year` (recommended for monthly reconciliation)
+- `Skip payroll rows` (recommended if paychecks are auto-generated in app)
+- `Include duplicates` (off by default to avoid accidental double imports)
 
 ## Daily Email Due Reports
 
@@ -149,7 +174,6 @@ After deployment, test the route manually:
 ```bash
 curl -H "Authorization: Bearer YOUR_CRON_SECRET" https://YOUR_APP_URL/api/notifications/daily
 ```
-- Mobile-friendly quick entry page: `/mobile-entry` (saves non-recurring expense rows with name `Wife Purchases`).
 
 ## Scripts
 

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { supabase } from "../lib/supabaseClient"
 import { isPaycheckDayUtc, parseCurrencyInput, parseDayInput, roundCurrency } from "../lib/financeUtils"
@@ -77,6 +77,16 @@ type NotificationSetting = {
   email: string
   timezone: string
   enabled: boolean
+}
+
+type ImportRow = {
+  day: number
+  name: string
+  amount: number
+  recurring: "none" | "monthly"
+  type: "expense" | "income"
+  month: number
+  year: number
 }
 
 type PayrollSettings = {
@@ -170,6 +180,17 @@ export default function Calendar() {
   const [showRecurringPayments, setShowRecurringPayments] = useState(false)
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
   const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false)
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false)
+  const [importRows, setImportRows] = useState<ImportRow[]>([])
+  const [importFileName, setImportFileName] = useState("")
+  const [importFileContent, setImportFileContent] = useState("")
+  const [importDetectedFormat, setImportDetectedFormat] = useState<"csv" | "statement" | "">("")
+  const [importError, setImportError] = useState("")
+  const [importWarnings, setImportWarnings] = useState<string[]>([])
+  const [importSkipPayrollRows, setImportSkipPayrollRows] = useState(true)
+  const [importUseCurrentMonthYear, setImportUseCurrentMonthYear] = useState(true)
+  const [importIncludeDuplicates, setImportIncludeDuplicates] = useState(false)
+  const [isImporting, setIsImporting] = useState(false)
   const [recurringDayDrafts, setRecurringDayDrafts] = useState<Record<string, string>>({})
   const [recurringDayMessage, setRecurringDayMessage] = useState("")
   const [recurringDayError, setRecurringDayError] = useState("")
@@ -213,6 +234,291 @@ export default function Calendar() {
     setTimeout(() => {
       setToasts((prev) => prev.filter((toast) => toast.id !== id))
     }, 3500)
+  }
+
+  const buildImportKey = useCallback((row: ImportRow) => {
+    const normalizedName = row.name.trim().toLowerCase().replace(/\s+/g, " ")
+    return [
+      row.day,
+      normalizedName,
+      roundCurrency(row.amount),
+      row.recurring,
+      row.type,
+      row.month,
+      row.year
+    ].join("|")
+  }, [])
+
+  const parseCsvLine = (line: string) => {
+    const result: string[] = []
+    let current = ""
+    let inQuotes = false
+
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index]
+      if (char === '"') {
+        const nextChar = line[index + 1]
+        if (inQuotes && nextChar === '"') {
+          current += '"'
+          index += 1
+          continue
+        }
+        inQuotes = !inQuotes
+        continue
+      }
+      if (char === "," && !inQuotes) {
+        result.push(current)
+        current = ""
+        continue
+      }
+      current += char
+    }
+
+    result.push(current)
+    return result.map((item) => item.trim())
+  }
+
+  const openImportModal = () => {
+    setImportRows([])
+    setImportFileName("")
+    setImportFileContent("")
+    setImportDetectedFormat("")
+    setImportError("")
+    setImportWarnings([])
+    setImportSkipPayrollRows(true)
+    setImportUseCurrentMonthYear(true)
+    setImportIncludeDuplicates(false)
+    setIsImportModalOpen(true)
+  }
+
+  const parseCsvContent = useCallback((fileContent: string) => {
+    const lines = fileContent
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+
+    if (lines.length < 2) {
+      setImportError("CSV must include a header row and at least one data row.")
+      setImportRows([])
+      setImportWarnings([])
+      setImportDetectedFormat("csv")
+      return
+    }
+
+    const header = parseCsvLine(lines[0]).map((field) => field.toLowerCase())
+    const requiredHeaders = ["day", "name", "amount", "recurring", "type", "month", "year"]
+    const missingHeaders = requiredHeaders.filter((column) => !header.includes(column))
+
+    if (missingHeaders.length > 0) {
+      setImportError(`Missing required columns: ${missingHeaders.join(", ")}`)
+      setImportRows([])
+      setImportWarnings([])
+      setImportDetectedFormat("csv")
+      return
+    }
+
+    const columnIndex = (column: string) => header.indexOf(column)
+    const warnings: string[] = []
+    const parsedRows: ImportRow[] = []
+
+    for (let lineNumber = 1; lineNumber < lines.length; lineNumber += 1) {
+      const raw = parseCsvLine(lines[lineNumber])
+      const rawDay = raw[columnIndex("day")] ?? ""
+      const rawName = raw[columnIndex("name")] ?? ""
+      const rawAmount = raw[columnIndex("amount")] ?? ""
+      const rawRecurring = (raw[columnIndex("recurring")] ?? "").toLowerCase()
+      const rawType = (raw[columnIndex("type")] ?? "").toLowerCase()
+      const rawMonth = raw[columnIndex("month")] ?? ""
+      const rawYear = raw[columnIndex("year")] ?? ""
+
+      const day = Number(rawDay)
+      const amount = roundCurrency(Number(rawAmount))
+      const parsedMonth = Number(rawMonth)
+      const parsedYear = Number(rawYear)
+
+      if (!Number.isInteger(day) || day < 1 || day > 31) {
+        warnings.push(`Line ${lineNumber + 1}: invalid day "${rawDay}"`)
+        continue
+      }
+      if (!rawName.trim()) {
+        warnings.push(`Line ${lineNumber + 1}: missing name`)
+        continue
+      }
+      if (!Number.isFinite(amount) || amount <= 0) {
+        warnings.push(`Line ${lineNumber + 1}: invalid amount "${rawAmount}"`)
+        continue
+      }
+      if (rawRecurring !== "none" && rawRecurring !== "monthly") {
+        warnings.push(`Line ${lineNumber + 1}: recurring must be "none" or "monthly"`)
+        continue
+      }
+      if (rawType !== "expense" && rawType !== "income") {
+        warnings.push(`Line ${lineNumber + 1}: type must be "expense" or "income"`)
+        continue
+      }
+      if (!Number.isInteger(parsedMonth) || parsedMonth < 0 || parsedMonth > 11) {
+        warnings.push(`Line ${lineNumber + 1}: invalid month "${rawMonth}"`)
+        continue
+      }
+      if (!Number.isInteger(parsedYear) || parsedYear < 2000 || parsedYear > 2100) {
+        warnings.push(`Line ${lineNumber + 1}: invalid year "${rawYear}"`)
+        continue
+      }
+
+      const normalizedName = rawName.trim().replace(/\s+/g, " ")
+      if (importSkipPayrollRows && /ENSONO INC PAYROLL/i.test(normalizedName)) {
+        continue
+      }
+
+      parsedRows.push({
+        day,
+        name: normalizedName,
+        amount,
+        recurring: rawRecurring as "none" | "monthly",
+        type: rawType as "expense" | "income",
+        month: importUseCurrentMonthYear ? month : parsedMonth,
+        year: importUseCurrentMonthYear ? year : parsedYear
+      })
+    }
+
+    setImportRows(parsedRows)
+    setImportWarnings(warnings.slice(0, 15))
+    setImportDetectedFormat("csv")
+    setImportError("")
+  }, [importSkipPayrollRows, importUseCurrentMonthYear, month, year])
+
+  const parseStatementContent = useCallback((fileContent: string) => {
+    const lines = fileContent.split(/\r?\n/)
+    const warnings: string[] = []
+    const parsedRows: ImportRow[] = []
+
+    let inChecking = false
+    let previousBalance: number | null = null
+    let statementMonth = month
+    let statementYear = year
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]
+      const trimmed = line.trim()
+
+      if (!trimmed) continue
+
+      const periodMatch = trimmed.match(/^Statement Period\s+(\d{2})\/\d{2}\/(\d{2,4})/i)
+      if (periodMatch) {
+        const parsedMonth = Number(periodMatch[1]) - 1
+        const rawYear = Number(periodMatch[2])
+        const normalizedYear = rawYear < 100 ? 2000 + rawYear : rawYear
+        if (Number.isInteger(parsedMonth) && parsedMonth >= 0 && parsedMonth <= 11) {
+          statementMonth = parsedMonth
+        }
+        if (Number.isInteger(normalizedYear) && normalizedYear >= 2000 && normalizedYear <= 2100) {
+          statementYear = normalizedYear
+        }
+      }
+
+      if (!inChecking && /SIMPLY RIGHT CHECKING/i.test(trimmed)) {
+        inChecking = true
+        continue
+      }
+
+      if (inChecking && /^SANTANDER SAVINGS$/i.test(trimmed)) {
+        break
+      }
+
+      if (!inChecking) continue
+
+      const dateMatch = line.match(/^(\d{2})-(\d{2})\s+/)
+      if (!dateMatch) continue
+
+      const day = Number(dateMatch[2])
+      const moneyMatches = [...line.matchAll(/\$([0-9,]+\.[0-9]{2})/g)]
+      if (moneyMatches.length === 0) continue
+
+      if (moneyMatches.length < 2) {
+        const balanceOnly = Number(moneyMatches[moneyMatches.length - 1][1].replace(/,/g, ""))
+        if (Number.isFinite(balanceOnly) && previousBalance === null) {
+          previousBalance = balanceOnly
+        }
+        continue
+      }
+
+      const amount = roundCurrency(Number(moneyMatches[0][1].replace(/,/g, "")))
+      const balance = Number(moneyMatches[moneyMatches.length - 1][1].replace(/,/g, ""))
+
+      if (!Number.isInteger(day) || day < 1 || day > 31) {
+        warnings.push(`Line ${index + 1}: invalid day`)
+        continue
+      }
+      if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(balance)) {
+        warnings.push(`Line ${index + 1}: could not parse money values`)
+        continue
+      }
+
+      const fullRest = line.slice(dateMatch[0].length).trim()
+      const normalizedName = fullRest
+        .replace(/\$[0-9,]+\.[0-9]{2}\s*\$[0-9,]+\.[0-9]{2}\s*$/, "")
+        .trim()
+        .replace(/\s+/g, " ")
+
+      if (!normalizedName) {
+        warnings.push(`Line ${index + 1}: missing name`)
+        continue
+      }
+
+      if (previousBalance === null) {
+        previousBalance = balance
+        continue
+      }
+
+      if (importSkipPayrollRows && /ENSONO INC PAYROLL/i.test(normalizedName)) {
+        previousBalance = balance
+        continue
+      }
+
+      parsedRows.push({
+        day,
+        name: normalizedName,
+        amount,
+        recurring: "none",
+        type: balance >= previousBalance ? "income" : "expense",
+        month: importUseCurrentMonthYear ? month : statementMonth,
+        year: importUseCurrentMonthYear ? year : statementYear
+      })
+
+      previousBalance = balance
+    }
+
+    if (parsedRows.length === 0) {
+      setImportError("No transactions found in statement text.")
+      setImportRows([])
+      setImportWarnings(warnings.slice(0, 15))
+      setImportDetectedFormat("statement")
+      return
+    }
+
+    setImportRows(parsedRows)
+    setImportWarnings(warnings.slice(0, 15))
+    setImportDetectedFormat("statement")
+    setImportError("")
+  }, [importSkipPayrollRows, importUseCurrentMonthYear, month, year])
+
+  const parseImportContent = useCallback((fileContent: string, fileName: string) => {
+    const isLikelyStatement =
+      /\.txt$/i.test(fileName) ||
+      (/Statement Period/i.test(fileContent) && /SIMPLY RIGHT CHECKING/i.test(fileContent))
+
+    if (isLikelyStatement) {
+      parseStatementContent(fileContent)
+      return
+    }
+
+    parseCsvContent(fileContent)
+  }, [parseCsvContent, parseStatementContent])
+
+  const handleImportFile = async (file: File) => {
+    const fileContent = await file.text()
+    setImportFileContent(fileContent)
+    parseImportContent(fileContent, file.name)
   }
 
   useEffect(() => {
@@ -263,6 +569,11 @@ export default function Calendar() {
 
     loadUser()
   }, [])
+
+  useEffect(() => {
+    if (!importFileContent) return
+    parseImportContent(importFileContent, importFileName)
+  }, [importFileContent, importFileName, parseImportContent])
 
   useEffect(() => {
     fetchEntries()
@@ -1143,6 +1454,36 @@ export default function Calendar() {
     setIsNotificationModalOpen(false)
   }
 
+  const runCsvImport = async () => {
+    setImportError("")
+    if (importRows.length === 0) {
+      setImportError("Choose a CSV file with at least one valid row.")
+      return
+    }
+
+    if (importAnalysis.rowsToInsert.length === 0) {
+      const message = "No new rows to import after duplicate checks."
+      setImportError(message)
+      pushToast(message)
+      return
+    }
+
+    setIsImporting(true)
+    const { error } = await supabase.from("expenses").insert(importAnalysis.rowsToInsert)
+    setIsImporting(false)
+
+    if (error) {
+      setImportError(error.message)
+      pushToast(error.message)
+      return
+    }
+
+    await fetchEntries()
+    const importedCount = importAnalysis.rowsToInsert.length
+    setIsImportModalOpen(false)
+    pushToast(`Imported ${importedCount} row${importedCount === 1 ? "" : "s"}.`, "success")
+  }
+
   const firstDay = new Date(year, month, 1)
   const lastDay = new Date(year, month + 1, 0)
   const daysInMonth = lastDay.getDate()
@@ -1189,6 +1530,50 @@ export default function Calendar() {
   const oneTimeRemainingSubtotal = oneTimePaymentsForMonth.reduce((sum, entry) => {
     return isOneTimePaid(entry) ? sum : sum + entry.amount
   }, 0)
+  const importAnalysis = useMemo(() => {
+    const existingKeys = new Set<string>()
+    entries.forEach((entry) => {
+      existingKeys.add(
+        buildImportKey({
+          day: entry.day,
+          name: entry.name,
+          amount: entry.amount,
+          recurring: entry.recurring,
+          type: entry.type,
+          month: entry.month,
+          year: entry.year
+        })
+      )
+    })
+
+    const seenInFile = new Set<string>()
+    const duplicatesExisting: ImportRow[] = []
+    const duplicatesFile: ImportRow[] = []
+    const rowsToInsert: ImportRow[] = []
+
+    for (const row of importRows) {
+      const key = buildImportKey(row)
+
+      if (!importIncludeDuplicates && seenInFile.has(key)) {
+        duplicatesFile.push(row)
+        continue
+      }
+      seenInFile.add(key)
+
+      if (!importIncludeDuplicates && existingKeys.has(key)) {
+        duplicatesExisting.push(row)
+        continue
+      }
+
+      rowsToInsert.push(row)
+    }
+
+    return {
+      rowsToInsert,
+      duplicatesExisting,
+      duplicatesFile
+    }
+  }, [buildImportKey, entries, importIncludeDuplicates, importRows])
 
   const selectedDayEntries = selectedDay === null ? [] : getEditableEntriesForDay(selectedDay)
 
@@ -1258,61 +1643,69 @@ export default function Calendar() {
         </div>
       </div>
 
-      <div className="mb-6 flex flex-wrap gap-2">
-        <Link
-          href="/mobile-entry"
-          className="px-3 py-2 rounded border bg-white text-sm"
-        >
-          Open Mobile Expense Entry
-        </Link>
-        <Link
-          href="/debts"
-          className="px-3 py-2 rounded border bg-white text-sm"
-        >
-          Open Debts
-        </Link>
-        <button
-          onClick={openNotificationModal}
-          className="px-3 py-2 rounded border bg-white text-sm"
-        >
-          Notification Settings
-        </button>
-        <button
-          onClick={openBalanceModal}
-          className="px-3 py-2 rounded border bg-white text-sm"
-        >
-          Set Starting Balance
-        </button>
-        <button
-          onClick={() => setShowOneTimePayments((prev) => !prev)}
-          className="px-3 py-2 rounded border bg-white text-sm"
-        >
-          {showOneTimePayments
-            ? "Hide Month's One-Time Payments"
-            : "Show Month's One-Time Payments"}
-        </button>
-        <button
-          onClick={() => setShowRecurringPayments((prev) => !prev)}
-          className="px-3 py-2 rounded border bg-white text-sm"
-        >
-          {showRecurringPayments
-            ? "Hide Month's Recurring Payments"
-            : "Show Month's Recurring Payments"}
-        </button>
-        <button
-          onClick={() => setShowMonthlyReport((prev) => !prev)}
-          className="px-3 py-2 rounded border bg-white text-sm"
-        >
-          {showMonthlyReport ? "Hide Monthly Report" : `Show Monthly Report (${year})`}
-        </button>
-        {isAdmin && (
-          <button
-            onClick={openSettingsModal}
-            className="px-3 py-2 rounded border bg-white text-sm"
+      <div className="mb-6 overflow-x-auto">
+        <div className="flex flex-nowrap gap-2 min-w-max pb-1">
+          <Link
+            href="/mobile-entry"
+            className="px-3 py-2 rounded border bg-white text-sm whitespace-nowrap"
           >
-            Admin Payroll Settings
+            Open Mobile Expense Entry
+          </Link>
+          <Link
+            href="/debts"
+            className="px-3 py-2 rounded border bg-white text-sm whitespace-nowrap"
+          >
+            Open Debts
+          </Link>
+          <button
+            onClick={openNotificationModal}
+            className="px-3 py-2 rounded border bg-white text-sm whitespace-nowrap"
+          >
+            Notification Settings
           </button>
-        )}
+          <button
+            onClick={openImportModal}
+            className="px-3 py-2 rounded border bg-white text-sm whitespace-nowrap"
+          >
+            Import Month CSV
+          </button>
+          <button
+            onClick={openBalanceModal}
+            className="px-3 py-2 rounded border bg-white text-sm whitespace-nowrap"
+          >
+            Set Starting Balance
+          </button>
+          <button
+            onClick={() => setShowOneTimePayments((prev) => !prev)}
+            className="px-3 py-2 rounded border bg-white text-sm whitespace-nowrap"
+          >
+            {showOneTimePayments
+              ? "Hide Month's One-Time Payments"
+              : "Show Month's One-Time Payments"}
+          </button>
+          <button
+            onClick={() => setShowRecurringPayments((prev) => !prev)}
+            className="px-3 py-2 rounded border bg-white text-sm whitespace-nowrap"
+          >
+            {showRecurringPayments
+              ? "Hide Month's Recurring Payments"
+              : "Show Month's Recurring Payments"}
+          </button>
+          <button
+            onClick={() => setShowMonthlyReport((prev) => !prev)}
+            className="px-3 py-2 rounded border bg-white text-sm whitespace-nowrap"
+          >
+            {showMonthlyReport ? "Hide Monthly Report" : `Show Monthly Report (${year})`}
+          </button>
+          {isAdmin && (
+            <button
+              onClick={openSettingsModal}
+              className="px-3 py-2 rounded border bg-white text-sm whitespace-nowrap"
+            >
+              Admin Payroll Settings
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="mb-6 grid grid-cols-4 gap-4 text-center text-sm font-medium">
@@ -1890,6 +2283,134 @@ export default function Calendar() {
                 disabled={isSavingCommission}
               >
                 {isSavingCommission ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isImportModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setIsImportModalOpen(false)} />
+
+          <div className="relative bg-white p-6 rounded-xl w-full max-w-3xl shadow-xl max-h-[85vh] overflow-y-auto">
+            <h3 className="text-lg font-semibold mb-2">Import Monthly File</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Upload either a clean CSV or your raw bank statement text file.
+            </p>
+            <p className="text-xs text-gray-500 mb-4">
+              CSV columns: <code>day,name,amount,recurring,type,month,year</code>
+            </p>
+
+            <input
+              type="file"
+              accept=".csv,text/csv,.txt,text/plain"
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (!file) return
+                setImportFileName(file.name)
+                setImportError("")
+                void handleImportFile(file)
+              }}
+              className="mb-4 block w-full text-sm"
+            />
+
+            <div className="mb-4 grid gap-2 sm:grid-cols-3">
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={importUseCurrentMonthYear}
+                  onChange={(event) => setImportUseCurrentMonthYear(event.target.checked)}
+                />
+                Use current viewed month/year
+              </label>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={importSkipPayrollRows}
+                  onChange={(event) => setImportSkipPayrollRows(event.target.checked)}
+                />
+                Skip payroll rows
+              </label>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={importIncludeDuplicates}
+                  onChange={(event) => setImportIncludeDuplicates(event.target.checked)}
+                />
+                Include duplicates
+              </label>
+            </div>
+
+            <div className="mb-4 rounded border p-3 text-sm bg-gray-50">
+              <div>File: {importFileName || "None selected"}</div>
+              <div>
+                Detected format: {importDetectedFormat === "" ? "Unknown" : importDetectedFormat}
+              </div>
+              <div>Valid rows parsed: {importRows.length}</div>
+              <div>Rows to insert: {importAnalysis.rowsToInsert.length}</div>
+              {!importIncludeDuplicates && (
+                <>
+                  <div>Skipped duplicates already in app: {importAnalysis.duplicatesExisting.length}</div>
+                  <div>Skipped duplicate rows inside CSV: {importAnalysis.duplicatesFile.length}</div>
+                </>
+              )}
+            </div>
+
+            {importWarnings.length > 0 && (
+              <div className="mb-4 rounded border border-yellow-300 bg-yellow-50 p-3">
+                <p className="text-sm font-medium text-yellow-800 mb-1">Warnings (first {importWarnings.length})</p>
+                <ul className="text-xs text-yellow-900 space-y-1">
+                  {importWarnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {importRows.length > 0 && (
+              <div className="mb-4 overflow-x-auto rounded border">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50">
+                    <tr className="text-left">
+                      <th className="px-2 py-1">Day</th>
+                      <th className="px-2 py-1">Name</th>
+                      <th className="px-2 py-1">Amount</th>
+                      <th className="px-2 py-1">Type</th>
+                      <th className="px-2 py-1">Recurring</th>
+                      <th className="px-2 py-1">Month</th>
+                      <th className="px-2 py-1">Year</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importRows.slice(0, 10).map((row, index) => (
+                      <tr key={`${row.name}-${row.day}-${index}`} className="border-t">
+                        <td className="px-2 py-1">{row.day}</td>
+                        <td className="px-2 py-1">{row.name}</td>
+                        <td className="px-2 py-1">${row.amount.toLocaleString()}</td>
+                        <td className="px-2 py-1">{row.type}</td>
+                        <td className="px-2 py-1">{row.recurring}</td>
+                        <td className="px-2 py-1">{row.month + 1}</td>
+                        <td className="px-2 py-1">{row.year}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {importError && <p className="mb-3 text-sm text-red-600">{importError}</p>}
+
+            <div className="flex justify-between">
+              <button onClick={() => setIsImportModalOpen(false)} className="text-gray-500">
+                Cancel
+              </button>
+              <button
+                onClick={runCsvImport}
+                disabled={isImporting}
+                className="bg-black text-white px-4 py-2 rounded disabled:opacity-60"
+              >
+                {isImporting ? "Importing..." : "Import Rows"}
               </button>
             </div>
           </div>
